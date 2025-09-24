@@ -160,9 +160,12 @@ def main():
                 
                 for day, group in df_chunk.groupby("day"):
                     if len(days_written_this_session) >= max_days: break
-                    file_path = os.path.join(base_folder, f"{day}.parquet")
+
+                    day_str = day.strftime('%Y-%m-%d')
+
+                    file_path = os.path.join(base_folder, f"{day_str}.parquet")
                     fastparquet.write(file_path, group.drop(columns=["day"]), compression="snappy", append=os.path.exists(file_path))
-                    
+
                     if day not in days_written_this_session:
                         days_written_this_session.add(day)
                         print(f"Wrote data for new day: {day}. Total days found: {len(days_written_this_session)}")
