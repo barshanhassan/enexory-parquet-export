@@ -11,8 +11,7 @@ ENV_VAR_MYSQL_CONN_STRING = "MYSQL_CONN_STRING"
 ENV_VAR_BATCH_SIZE = "BATCH_SIZE"
 ENV_VAR_MAX_DAYS = "MAX_DAYS"
 
-# Pandas' absolute lower limit is 1677-09-21. We use 1678 to be safe.
-PANDAS_SAFE_MIN_DATE = "1678-01-01 00:00:00"
+MIN_DATE = "2010-01-02 00:00:00"
 
 def get_connection():
     conn_str = os.getenv(ENV_VAR_MYSQL_CONN_STRING)
@@ -50,8 +49,8 @@ def find_latest_dt(base_folder, dt_column):
             print(f"Skipping {f} due to error: {e}")
             continue
             
-    print(f"No recent timestamps found. Starting from the safe boundary: {PANDAS_SAFE_MIN_DATE}")
-    return PANDAS_SAFE_MIN_DATE
+    print(f"No recent timestamps found. Starting from the safe boundary: {MIN_DATE}")
+    return MIN_DATE
 
 def run_historical_extraction(conn, query, params, chunk_size, base_folder):
     """A dedicated loop for the one-time historical backfill with safe date handling."""
@@ -135,7 +134,7 @@ def main():
         if not files_exist:
             print("="*50 + "\nNO PARQUET FILES FOUND. PERFORMING ONE-TIME HISTORICAL BACKFILL.\n" + "="*50)
             historical_query = f"""SELECT id, date_time, value, ts FROM `{table}` WHERE `{dt_col}` < %(end_date)s ORDER BY `{dt_col}` ASC"""
-            run_historical_extraction(conn, historical_query, {"end_date": PANDAS_SAFE_MIN_DATE}, chunk_size, base_folder)
+            run_historical_extraction(conn, historical_query, {"end_date": MIN_DATE}, chunk_size, base_folder)
 
         print("="*50 + "\nPERFORMING INCREMENTAL RUN.\n" + "="*50)
         
@@ -144,7 +143,7 @@ def main():
 
         # --- REFETCH AND OVERWRITE LATEST DAY ---
         # Determine the starting date for the walking loop
-        if latest_timestamp.strftime('%Y-%m-%d %H:%M:%S') == PANDAS_SAFE_MIN_DATE:
+        if latest_timestamp.strftime('%Y-%m-%d %H:%M:%S') == MIN_DATE:
             # No real data exists yet, start walking from the safe boundary
             current_date_for_loop = latest_timestamp.date()
         else:
