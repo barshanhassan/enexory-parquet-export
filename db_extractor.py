@@ -53,6 +53,13 @@ def find_latest_dt(base_folder, dt_column):
     print(f"No recent timestamps found. Starting incremental run from the safe boundary: {PANDAS_SAFE_MIN_DATE}")
     return PANDAS_SAFE_MIN_DATE
 
+def custom_date_formatter(x):
+    if pd.notna(x) and hasattr(x, 'strftime'):
+        # Use f-string formatting for guaranteed padding, bypassing buggy strftime on old dates
+        return f"{x.year:04d}-{x.month:02d}-{x.day:02d} {x.hour:02d}:{x.minute:02d}:{x.second:02d}"
+    else:
+        return "0001-01-01 00:00:00"
+
 def run_historical_extraction(conn, query, params, chunk_size, base_folder):
     """A dedicated loop for the one-time historical backfill with safe date handling."""
     iterator = pd.read_sql(query, conn, params=params, chunksize=chunk_size)
@@ -62,17 +69,10 @@ def run_historical_extraction(conn, query, params, chunk_size, base_folder):
 
     for df_chunk in iterator:
         if df_chunk.empty: continue
-        
-        # --- THE FIX FOR HISTORICAL DATA ---
-        # Instead of forcing to pandas datetime, we apply a safe string format.
-        # This handles Python's native datetime objects which support a wider range.
-        for col in ["date_time", "ts"]:
-            df_chunk[col] = df_chunk[col].apply(
-                lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(x) and hasattr(x, 'strftime') else "0001-01-01 00:00:00"
-            )
 
-        # Create the 'day' column using safe string slicing, not pd.to_datetime
-        # This works because the column is now guaranteed to be a 'YYYY-MM-DD...' string.
+        for col in ["date_time", "ts"]:
+            df_chunk[col] = df_chunk[col].apply(custom_date_formatter)
+
         df_chunk["day"] = df_chunk[dt_col].str[:10]
 
         for day, group in df_chunk.groupby("day"):
@@ -161,9 +161,7 @@ def main():
                 for day, group in df_chunk.groupby("day"):
                     if len(days_written_this_session) >= max_days: break
 
-                    day_str = day.strftime('%Y-%m-%d')
-
-                    file_path = os.path.join(base_folder, f"{day_str}.parquet")
+                    file_path = os.path.join(base_folder, f"{day}.parquet")
                     fastparquet.write(file_path, group.drop(columns=["day"]), compression="snappy", append=os.path.exists(file_path))
 
                     if day not in days_written_this_session:
