@@ -4,7 +4,7 @@ import pandas as pd
 import fastparquet
 import time
 import glob
-from datetime import date
+from datetime import date, timedelta
 
 # --- Configuration Constants ---
 ENV_VAR_MYSQL_CONN_STRING = "MYSQL_CONN_STRING"
@@ -50,18 +50,12 @@ def find_latest_dt(base_folder, dt_column):
             print(f"Skipping {f} due to error: {e}")
             continue
             
-    print(f"No recent timestamps found. Starting incremental run from the safe boundary: {PANDAS_SAFE_MIN_DATE}")
+    print(f"No recent timestamps found. Starting from the safe boundary: {PANDAS_SAFE_MIN_DATE}")
     return PANDAS_SAFE_MIN_DATE
-
-def custom_date_formatter(x):
-    if pd.notna(x) and hasattr(x, 'strftime'):
-        # Use f-string formatting for guaranteed padding, bypassing buggy strftime on old dates
-        return f"{x.year:04d}-{x.month:02d}-{x.day:02d} {x.hour:02d}:{x.minute:02d}:{x.second:02d}"
-    else:
-        return "0001-01-01 00:00:00"
 
 def run_historical_extraction(conn, query, params, chunk_size, base_folder):
     """A dedicated loop for the one-time historical backfill with safe date handling."""
+    # This function is unchanged.
     iterator = pd.read_sql(query, conn, params=params, chunksize=chunk_size)
     total_extracted = 0
     start_time = time.time()
@@ -69,20 +63,60 @@ def run_historical_extraction(conn, query, params, chunk_size, base_folder):
 
     for df_chunk in iterator:
         if df_chunk.empty: continue
-
+        # Use a special formatter for potentially very old historical dates
+        custom_formatter = lambda x: f"{x.year:04d}-{x.month:02d}-{x.day:02d} {x.hour:02d}:{x.minute:02d}:{x.second:02d}" if pd.notna(x) and hasattr(x, 'strftime') else "0001-01-01 00:00:00"
         for col in ["date_time", "ts"]:
-            df_chunk[col] = df_chunk[col].apply(custom_date_formatter)
-
+            df_chunk[col] = df_chunk[col].apply(custom_formatter)
         df_chunk["day"] = df_chunk[dt_col].str[:10]
-
         for day, group in df_chunk.groupby("day"):
             file_path = os.path.join(base_folder, f"{day}.parquet")
             fastparquet.write(file_path, group.drop(columns=["day"]), compression="snappy", append=os.path.exists(file_path))
             total_extracted += len(group)
             print(f"Wrote {len(group)} historical rows to {file_path}")
-
     elapsed = time.time() - start_time
     print(f"Historical extraction finished. {total_extracted} rows in {elapsed:.2f}s")
+
+def _process_single_day(conn, day_to_process, table, dt_col, base_folder, chunk_size):
+    """
+    Fetches all data for a single day, overwrites the corresponding file, and returns row count.
+    """
+    start_of_day = pd.Timestamp(day_to_process)
+    end_of_day = start_of_day + timedelta(days=1)
+    
+    query = f"""
+        SELECT id, date_time, value, ts FROM `{table}`
+        WHERE `{dt_col}` >= %(start_of_day)s AND `{dt_col}` < %(end_of_day)s
+    """
+    
+    # Use pandas to read SQL in chunks for memory efficiency
+    iterator = pd.read_sql(query, conn, params={"start_of_day": start_of_day, "end_of_day": end_of_day}, chunksize=chunk_size)
+    
+    all_chunks_for_day = []
+    for df_chunk in iterator:
+        if not df_chunk.empty:
+            all_chunks_for_day.append(df_chunk)
+
+    if not all_chunks_for_day:
+        print(f"No data found for {day_to_process.strftime('%Y-%m-%d')}.")
+        return 0
+
+    # Combine all chunks into a single DataFrame for the day
+    full_day_df = pd.concat(all_chunks_for_day, ignore_index=True)
+    
+    # Standard date formatting
+    for col in ["date_time", "ts"]:
+        dt_series = pd.to_datetime(full_day_df[col], errors="coerce")
+        fmt_series = dt_series.dt.strftime("%Y-%m-%d %H:%M:%S")
+        full_day_df[col] = fmt_series.fillna("0001-01-01 00:00:00")
+        
+    file_path = os.path.join(base_folder, f"{day_to_process.strftime('%Y-%m-%d')}.parquet")
+    
+    # Overwrite the file with the complete data for the day
+    fastparquet.write(file_path, full_day_df, compression="snappy", append=False)
+    
+    rows_written = len(full_day_df)
+    print(f"Wrote {rows_written} rows to {file_path} (overwritten).")
+    return rows_written
 
 def main():
     conn = get_connection()
@@ -96,105 +130,57 @@ def main():
         files_exist = bool(glob.glob(os.path.join(base_folder, "*.parquet")))
         
         chunk_size = int(os.getenv(ENV_VAR_BATCH_SIZE, "1000"))
-        max_days = int(os.getenv(ENV_VAR_MAX_DAYS, "3"))
-        
-        # --- DYNAMIC LOOKAHEAD SETUP ---
-        default_lookahead_days = 1
-        current_lookahead_days = default_lookahead_days
-        MAX_LOOKAHEAD_DAYS = 365
-        print(f"Targeting {max_days} data-days per run. Initial lookahead window: {default_lookahead_days} days.")
+        max_days_to_find = int(os.getenv(ENV_VAR_MAX_DAYS, "3"))
 
         if not files_exist:
-            # --- PHASE 1: HISTORICAL BACKFILL ---
             print("="*50 + "\nNO PARQUET FILES FOUND. PERFORMING ONE-TIME HISTORICAL BACKFILL.\n" + "="*50)
-            historical_query = f"""
-                SELECT id, date_time, value, ts FROM `{table}`
-                WHERE `{dt_col}` < %(end_date)s ORDER BY `{dt_col}` ASC
-            """
+            historical_query = f"""SELECT id, date_time, value, ts FROM `{table}` WHERE `{dt_col}` < %(end_date)s ORDER BY `{dt_col}` ASC"""
             run_historical_extraction(conn, historical_query, {"end_date": PANDAS_SAFE_MIN_DATE}, chunk_size, base_folder)
 
-        # --- PHASE 2: NORMAL INCREMENTAL RUN ---
         print("="*50 + "\nPERFORMING INCREMENTAL RUN.\n" + "="*50)
         
-        current_start_dt = find_latest_dt(base_folder, dt_col)
+        latest_dt_str = find_latest_dt(base_folder, dt_col)
+        latest_timestamp = pd.to_datetime(latest_dt_str)
+
+        # --- REFETCH AND OVERWRITE LATEST DAY ---
+        # Determine the starting date for the walking loop
+        if latest_timestamp.strftime('%Y-%m-%d %H:%M:%S') == PANDAS_SAFE_MIN_DATE:
+            # No real data exists yet, start walking from the safe boundary
+            current_date_for_loop = latest_timestamp.date()
+        else:
+            # Real data exists. First, refetch the most recent day.
+            date_to_refetch = latest_timestamp.date()
+            print(f"\n--- REFETCHING LATEST DAY: {date_to_refetch.strftime('%Y-%m-%d')} ---")
+            _process_single_day(conn, date_to_refetch, table, dt_col, base_folder, chunk_size)
+            
+            # Then, set the loop to start on the *next* day.
+            current_date_for_loop = date_to_refetch + timedelta(days=1)
+
+        # --- START DAY-BY-DAY WALKING LOOP ---
         days_written_this_session = set()
         total_extracted_this_session = 0
         session_start_time = time.time()
+        future_safety_boundary = date.today() + timedelta(days=7)
 
-        sentinel_date = date(1, 1, 1)
+        print(f"\n--- Starting incremental walk from {current_date_for_loop.strftime('%Y-%m-%d')} ---")
+        while len(days_written_this_session) < max_days_to_find:
+            if current_date_for_loop > future_safety_boundary:
+                print(f"Stopping: current date {current_date_for_loop} has passed the safety boundary.")
+                break
 
-        while len(days_written_this_session) < max_days:
-            print(f"\n--- Starting query iteration. Target: {max_days} days. Found: {len(days_written_this_session)} ---")
-            print(f"Querying for {current_lookahead_days} days starting from {current_start_dt}")
-            
-            cursor = conn.cursor(buffered=True, dictionary=True)
-            query = f"""
-                SELECT id, date_time, value, ts FROM `{table}`
-                WHERE `{dt_col}` > %(start_dt)s
-                AND `{dt_col}` < DATE_ADD(%(start_dt)s, INTERVAL %(lookahead)s DAY)
-                ORDER BY `{dt_col}` ASC
-            """
-            cursor.execute(query, {"start_dt": current_start_dt, "lookahead": current_lookahead_days})
+            print(f"Checking for day: {current_date_for_loop.strftime('%Y-%m-%d')}")
+            rows_written = _process_single_day(conn, current_date_for_loop, table, dt_col, base_folder, chunk_size)
 
-            data_found_in_iteration = False
-            latest_processed_dt_in_iteration = None
+            if rows_written > 0:
+                days_written_this_session.add(current_date_for_loop)
+                total_extracted_this_session += rows_written
+                print(f"Found new day with data. Total days found this session: {len(days_written_this_session)}")
 
-            while len(days_written_this_session) < max_days:
-                rows = cursor.fetchmany(size=chunk_size)
-                if not rows:
-                    break # No more rows in the result set
-
-                df_chunk = pd.DataFrame(rows)
-                data_found_in_iteration = True
-                
-                for col in ["date_time", "ts"]:
-                    dt_series = pd.to_datetime(df_chunk[col], errors="coerce")
-                    fmt_series = dt_series.dt.strftime("%Y-%m-%d %H:%M:%S")
-                    df_chunk[col] = fmt_series.fillna("0001-01-01 00:00:00")
-                
-                chunk_max_dt = df_chunk[dt_col].max()
-                if latest_processed_dt_in_iteration is None or chunk_max_dt > latest_processed_dt_in_iteration:
-                    latest_processed_dt_in_iteration = chunk_max_dt
-                
-                df_chunk["day"] = pd.to_datetime(df_chunk[dt_col], errors="coerce").dt.date.fillna(sentinel_date)
-                
-                for day, group in df_chunk.groupby("day"):
-                    if len(days_written_this_session) >= max_days: break
-
-                    file_path = os.path.join(base_folder, f"{day}.parquet")
-                    fastparquet.write(file_path, group.drop(columns=["day"]), compression="snappy", append=os.path.exists(file_path))
-
-                    if day not in days_written_this_session:
-                        days_written_this_session.add(day)
-                        print(f"Wrote data for new day: {day}. Total days found: {len(days_written_this_session)}")
-                    total_extracted_this_session += len(group)
-                if len(days_written_this_session) >= max_days: break
-            
-            cursor.close()
-
-            if data_found_in_iteration:
-                current_start_dt = latest_processed_dt_in_iteration
-                # --- RESET LOOKAHEAD on success ---
-                if current_lookahead_days != default_lookahead_days:
-                    print(f"Data found! Resetting lookahead window to {default_lookahead_days} days.")
-                    current_lookahead_days = default_lookahead_days
-            else:
-                print(f"No data found in window. Jumping forward by {current_lookahead_days} days.")
-                current_start_dt_ts = pd.to_datetime(current_start_dt)
-                next_start_dt_ts = current_start_dt_ts + pd.Timedelta(days=current_lookahead_days)
-
-                future_safety_boundary = pd.Timestamp.now() + pd.Timedelta(days=7)
-                if next_start_dt_ts > future_safety_boundary:
-                    print(f"Lookahead window has passed the safety boundary of one week from now. Stopping.")
-                    break
-                
-                current_start_dt = next_start_dt_ts.strftime('%Y-%m-%d %H:%M:%S')
-                # --- INCREASE LOOKAHEAD on failure ---
-                current_lookahead_days = min(current_lookahead_days * 2, MAX_LOOKAHEAD_DAYS)
-                print(f"Increasing lookahead window to {current_lookahead_days} days for the next iteration.")
+            # Walk to the next day
+            current_date_for_loop += timedelta(days=1)
 
         elapsed = time.time() - session_start_time
-        print(f"\nIncremental run finished. Extracted {total_extracted_this_session} rows for {len(days_written_this_session)} distinct days in {elapsed:.2f}s.")
+        print(f"\nIncremental run finished. Extracted {total_extracted_this_session} rows for {len(days_written_this_session)} new days in {elapsed:.2f}s.")
 
     finally:
         if 'conn' in locals() and conn.is_connected():
