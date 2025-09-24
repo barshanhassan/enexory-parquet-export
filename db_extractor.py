@@ -99,7 +99,7 @@ def main():
         max_days = int(os.getenv(ENV_VAR_MAX_DAYS, "3"))
         
         # --- DYNAMIC LOOKAHEAD SETUP ---
-        default_lookahead_days = max_days * 2
+        default_lookahead_days = 1
         current_lookahead_days = default_lookahead_days
         MAX_LOOKAHEAD_DAYS = 365
         print(f"Targeting {max_days} data-days per run. Initial lookahead window: {default_lookahead_days} days.")
