@@ -91,7 +91,6 @@ def main():
         table = "api_data_timeseries"
         dt_col = "date_time"
         base_folder = "data"
-        updated_ts_col = "updated_ts"
 
         os.makedirs(base_folder, exist_ok=True)
         files_exist = bool(glob.glob(os.path.join(base_folder, "*.parquet")))
