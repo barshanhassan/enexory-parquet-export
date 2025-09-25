@@ -4,7 +4,7 @@ import pandas as pd
 import fastparquet
 import time
 import glob
-from datetime import date, timedelta, datetime
+from datetime import timedelta
 
 ENV_VAR_MYSQL_CONN_STRING = "MYSQL_CONN_STRING"
 MIN_DATE = "2010-01-02 00:00:00"
