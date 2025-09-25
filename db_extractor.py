@@ -4,7 +4,7 @@ import pandas as pd
 import fastparquet
 import time
 import glob
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 # --- Configuration Constants ---
 ENV_VAR_MYSQL_CONN_STRING = "MYSQL_CONN_STRING"
@@ -24,6 +24,37 @@ def parse_conn_string(conn_str):
     kv = dict(p.split("=", 1) for p in parts)
     kv["port"] = int(kv.get("port", 3306))
     return kv
+
+def get_max_db_date(conn, table, dt_col):
+    """
+    Queries the database to find the maximum date in the specified column.
+    This acts as a dynamic stop condition for the incremental loop.
+    """
+    cursor = None
+    try:
+        cursor = conn.cursor()
+        query = f"SELECT MAX(`{dt_col}`) FROM `{table}`"
+        cursor.execute(query)
+        result = cursor.fetchone()
+        
+        # result will be a tuple like (datetime.datetime(...),) or (None,)
+        if result and result[0]:
+            # Convert datetime to date
+            max_dt = result[0].date()
+            print(f"Determined max date in database is: {max_dt.strftime('%Y-%m-%d')}")
+            return max_dt
+        else:
+            # Fallback if table is empty or max is NULL
+            print("Could not determine max date from database. Defaulting to today.")
+            return date.today()
+    except mysql.connector.Error as err:
+        print(f"Database error while fetching max date: {err}")
+        print("Defaulting to today as a safety measure.")
+        return date.today()
+    finally:
+        if cursor:
+            cursor.close()
+
 
 def find_latest_dt(base_folder, dt_column):
     """
@@ -96,7 +127,7 @@ def _process_single_day(conn, day_to_process, table, dt_col, base_folder, chunk_
             all_chunks_for_day.append(df_chunk)
 
     if not all_chunks_for_day:
-        print(f"No data found for {day_to_process.strftime('%Y-%m-%d')}.")
+        # This is expected for days without data, so we don't print a message here
         return 0
 
     # Combine all chunks into a single DataFrame for the day
@@ -142,29 +173,27 @@ def main():
         latest_timestamp = pd.to_datetime(latest_dt_str)
 
         # --- REFETCH AND OVERWRITE LATEST DAY ---
-        # Determine the starting date for the walking loop
         if latest_timestamp.strftime('%Y-%m-%d %H:%M:%S') == MIN_DATE:
-            # No real data exists yet, start walking from the safe boundary
             current_date_for_loop = latest_timestamp.date()
         else:
-            # Real data exists. First, refetch the most recent day.
             date_to_refetch = latest_timestamp.date()
             print(f"\n--- REFETCHING LATEST DAY: {date_to_refetch.strftime('%Y-%m-%d')} ---")
             _process_single_day(conn, date_to_refetch, table, dt_col, base_folder, chunk_size)
-            
-            # Then, set the loop to start on the *next* day.
             current_date_for_loop = date_to_refetch + timedelta(days=1)
 
         # --- START DAY-BY-DAY WALKING LOOP ---
         days_written_this_session = set()
         total_extracted_this_session = 0
         session_start_time = time.time()
-        future_safety_boundary = date.today() + timedelta(days=7)
+        
+        # *** MODIFICATION: Determine the dynamic stop condition ***
+        max_db_date = get_max_db_date(conn, table, dt_col)
 
-        print(f"\n--- Starting incremental walk from {current_date_for_loop.strftime('%Y-%m-%d')} ---")
+        print(f"\n--- Starting incremental walk from {current_date_for_loop.strftime('%Y-%m-%d')} up to {max_db_date.strftime('%Y-%m-%d')} ---")
         while len(days_written_this_session) < max_days_to_find:
-            if current_date_for_loop > future_safety_boundary:
-                print(f"Stopping: current date {current_date_for_loop} has passed the safety boundary.")
+            # *** MODIFICATION: Use the dynamic boundary from the database ***
+            if current_date_for_loop > max_db_date:
+                print(f"Stopping: current date {current_date_for_loop} has passed the max date found in the database ({max_db_date}).")
                 break
 
             print(f"Checking for day: {current_date_for_loop.strftime('%Y-%m-%d')}")
