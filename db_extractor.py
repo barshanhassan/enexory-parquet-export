@@ -6,12 +6,9 @@ import time
 import glob
 from datetime import date, timedelta, datetime
 
-# --- Configuration Constants ---
 ENV_VAR_MYSQL_CONN_STRING = "MYSQL_CONN_STRING"
-ENV_VAR_BATCH_SIZE = "BATCH_SIZE"
-ENV_VAR_MAX_DAYS = "MAX_DAYS"
-
 MIN_DATE = "2010-01-02 00:00:00"
+CHUNK_SIZE = 1000000
 
 def get_connection():
     conn_str = os.getenv(ENV_VAR_MYSQL_CONN_STRING)
@@ -31,30 +28,21 @@ def get_max_db_date(conn, table, dt_col):
     This acts as a dynamic stop condition for the incremental loop.
     """
     cursor = None
-    try:
-        cursor = conn.cursor()
-        query = f"SELECT MAX(`{dt_col}`) FROM `{table}`"
-        cursor.execute(query)
-        result = cursor.fetchone()
-        
-        # result will be a tuple like (datetime.datetime(...),) or (None,)
-        if result and result[0]:
-            # Convert datetime to date
-            max_dt = result[0].date()
-            print(f"Determined max date in database is: {max_dt.strftime('%Y-%m-%d')}")
-            return max_dt
-        else:
-            # Fallback if table is empty or max is NULL
-            print("Could not determine max date from database. Defaulting to today.")
-            return date.today()
-    except mysql.connector.Error as err:
-        print(f"Database error while fetching max date: {err}")
-        print("Defaulting to today as a safety measure.")
-        return date.today()
-    finally:
-        if cursor:
-            cursor.close()
 
+    cursor = conn.cursor()
+    query = f"SELECT MAX(`{dt_col}`) FROM `{table}`"
+    cursor.execute(query)
+    result = cursor.fetchone()
+    
+    if result and result[0]:
+        max_dt = result[0].date()
+        print(f"Determined max date in database is: {max_dt.strftime('%Y-%m-%d')}")
+        cursor.close()
+        return max_dt
+    else:
+        print("Could not determine max date from database. Defaulting to today.")
+        cursor.close()
+        raise RuntimeError("Please make sure a max date is available from the database.")
 
 def find_latest_dt(base_folder, dt_column):
     """
@@ -118,7 +106,6 @@ def _process_single_day(conn, day_to_process, table, dt_col, base_folder, chunk_
         WHERE `{dt_col}` >= %(start_of_day)s AND `{dt_col}` < %(end_of_day)s
     """
     
-    # Use pandas to read SQL in chunks for memory efficiency
     iterator = pd.read_sql(query, conn, params={"start_of_day": start_of_day, "end_of_day": end_of_day}, chunksize=chunk_size)
     
     all_chunks_for_day = []
@@ -127,21 +114,16 @@ def _process_single_day(conn, day_to_process, table, dt_col, base_folder, chunk_
             all_chunks_for_day.append(df_chunk)
 
     if not all_chunks_for_day:
-        # This is expected for days without data, so we don't print a message here
         return 0
 
-    # Combine all chunks into a single DataFrame for the day
     full_day_df = pd.concat(all_chunks_for_day, ignore_index=True)
     
-    # Standard date formatting
     for col in ["date_time", "ts"]:
         dt_series = pd.to_datetime(full_day_df[col], errors="coerce")
         fmt_series = dt_series.dt.strftime("%Y-%m-%d %H:%M:%S")
         full_day_df[col] = fmt_series.fillna("0001-01-01 00:00:00")
         
     file_path = os.path.join(base_folder, f"{day_to_process.strftime('%Y-%m-%d')}.parquet")
-    
-    # Overwrite the file with the complete data for the day
     fastparquet.write(file_path, full_day_df, compression="snappy", append=False)
     
     rows_written = len(full_day_df)
@@ -159,13 +141,10 @@ def main():
         os.makedirs(base_folder, exist_ok=True)
         files_exist = bool(glob.glob(os.path.join(base_folder, "*.parquet")))
         
-        chunk_size = int(os.getenv(ENV_VAR_BATCH_SIZE, "1000"))
-        max_days_to_find = int(os.getenv(ENV_VAR_MAX_DAYS, "3"))
-
         if not files_exist:
             print("="*50 + "\nNO PARQUET FILES FOUND. PERFORMING ONE-TIME HISTORICAL BACKFILL.\n" + "="*50)
             historical_query = f"""SELECT id, date_time, value, ts FROM `{table}` WHERE `{dt_col}` < %(end_date)s ORDER BY `{dt_col}` ASC"""
-            run_historical_extraction(conn, historical_query, {"end_date": MIN_DATE}, chunk_size, base_folder)
+            run_historical_extraction(conn, historical_query, {"end_date": MIN_DATE}, CHUNK_SIZE, base_folder)
 
         print("="*50 + "\nPERFORMING INCREMENTAL RUN.\n" + "="*50)
         
@@ -178,7 +157,7 @@ def main():
         else:
             date_to_refetch = latest_timestamp.date()
             print(f"\n--- REFETCHING LATEST DAY: {date_to_refetch.strftime('%Y-%m-%d')} ---")
-            _process_single_day(conn, date_to_refetch, table, dt_col, base_folder, chunk_size)
+            _process_single_day(conn, date_to_refetch, table, dt_col, base_folder, CHUNK_SIZE)
             current_date_for_loop = date_to_refetch + timedelta(days=1)
 
         # --- START DAY-BY-DAY WALKING LOOP ---
@@ -186,25 +165,25 @@ def main():
         total_extracted_this_session = 0
         session_start_time = time.time()
         
-        # *** MODIFICATION: Determine the dynamic stop condition ***
         max_db_date = get_max_db_date(conn, table, dt_col)
 
         print(f"\n--- Starting incremental walk from {current_date_for_loop.strftime('%Y-%m-%d')} up to {max_db_date.strftime('%Y-%m-%d')} ---")
-        while len(days_written_this_session) < max_days_to_find:
-            # *** MODIFICATION: Use the dynamic boundary from the database ***
+        
+        # Loop indefinitely until we pass the max date in the database.
+        while True:
             if current_date_for_loop > max_db_date:
                 print(f"Stopping: current date {current_date_for_loop} has passed the max date found in the database ({max_db_date}).")
                 break
 
             print(f"Checking for day: {current_date_for_loop.strftime('%Y-%m-%d')}")
-            rows_written = _process_single_day(conn, current_date_for_loop, table, dt_col, base_folder, chunk_size)
+            rows_written = _process_single_day(conn, current_date_for_loop, table, dt_col, base_folder, CHUNK_SIZE)
 
             if rows_written > 0:
                 days_written_this_session.add(current_date_for_loop)
                 total_extracted_this_session += rows_written
-                print(f"Found new day with data. Total days found this session: {len(days_written_this_session)}")
+                # The following log is still useful to see progress
+                print(f"Found new day with data. Total distinct days found this session: {len(days_written_this_session)}")
 
-            # Walk to the next day
             current_date_for_loop += timedelta(days=1)
 
         elapsed = time.time() - session_start_time
