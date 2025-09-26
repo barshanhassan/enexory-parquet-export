@@ -157,7 +157,7 @@ def run_binlog_refresh():
         print(f"Streaming binlogs {start_ts} → {end_ts} ...")
         days = collect_binlog_days(start_ts, end_ts)
         print(f"Affected days: {days}")
-        exit(0)
+
         for d in days:
             print(f"--- Refreshing {d}")
             _process_single_day(conn, d, TABLE, DT_COL, BASE_FOLDER, CHUNK_SIZE)
