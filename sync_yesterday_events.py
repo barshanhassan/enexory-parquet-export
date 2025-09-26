@@ -13,6 +13,7 @@ CHUNK_SIZE = 1000000
 BASE_FOLDER = "data2"
 TABLE = "api_data_timeseries"
 DT_COL = "date_time"
+DT_COL_BINLOGS = "UNKNOWN_COL2"
     
 def parse_conn_string(conn_str):
     parts = [p.strip() for p in conn_str.split(";") if p.strip()]
@@ -47,17 +48,6 @@ def collect_binlog_days(start_ts, end_ts):
     """
     Collect affected days directly from row-based binlogs.
     """
-    
-    # conn = get_connection()
-    # cur = conn.cursor()
-    # cur.execute("SHOW BINARY LOGS;")
-    # logs = cur.fetchall()  # list of (Log_name, File_size)
-
-    # last_log = logs[-1][0]  # the last binlog file
-    # print("Last binlog file:", last_log)
-
-    # cur.close()
-    # conn.close()
 
     affected_days = set()
 
@@ -76,21 +66,23 @@ def collect_binlog_days(start_ts, end_ts):
 
     for binlogevent in stream:
         ev_time = datetime.fromtimestamp(binlogevent.timestamp)
+
         if ev_time < start_ts:
             continue
         if ev_time >= end_ts:
             break
-
+        
         if getattr(binlogevent, "table", None) != TABLE:
             continue
-
+        
         for row in binlogevent.rows:
+            
             if isinstance(binlogevent, WriteRowsEvent):
-                dt_val = row["values"].get(DT_COL)
+                dt_val = row["values"].get(DT_COL_BINLOGS)
             elif isinstance(binlogevent, UpdateRowsEvent):
-                dt_val = row["after_values"].get(DT_COL)
+                dt_val = row["after_values"].get(DT_COL_BINLOGS)
             elif isinstance(binlogevent, DeleteRowsEvent):
-                dt_val = row["values"].get(DT_COL)
+                dt_val = row["values"].get(DT_COL_BINLOGS)
             else:
                 dt_val = None
 
@@ -165,7 +157,7 @@ def run_binlog_refresh():
         print(f"Streaming binlogs {start_ts} → {end_ts} ...")
         days = collect_binlog_days(start_ts, end_ts)
         print(f"Affected days: {days}")
-
+        exit(0)
         for d in days:
             print(f"--- Refreshing {d}")
             _process_single_day(conn, d, TABLE, DT_COL, BASE_FOLDER, CHUNK_SIZE)
