@@ -47,20 +47,31 @@ def collect_binlog_days(start_ts, end_ts):
     """
     Collect affected days directly from row-based binlogs.
     """
-    conn_str = os.getenv(ENV_VAR_MYSQL_CONN_STRING)
-    if not conn_str:
-        raise ValueError("Connection string missing in env variable.")
+    
+    # conn = get_connection()
+    # cur = conn.cursor()
+    # cur.execute("SHOW BINARY LOGS;")
+    # logs = cur.fetchall()  # list of (Log_name, File_size)
+
+    # last_log = logs[-1][0]  # the last binlog file
+    # print("Last binlog file:", last_log)
+
+    # cur.close()
+    # conn.close()
 
     affected_days = set()
 
     stream = BinLogStreamReader(
-        connection_settings=parse_conn_string(conn_str),
+        connection_settings=conn_str_parsed,
         server_id=25925,  # must be unique in replication cluster
         only_schemas=[SCHEMA],
         only_events=[WriteRowsEvent, UpdateRowsEvent, DeleteRowsEvent],
-        blocking=True,
+        blocking=False,
         resume_stream=False,
-        freeze_schema=True
+        # log_file=last_log,
+        freeze_schema=True,
+        log_pos=4,
+        skip_to_timestamp=int(start_ts)
     )
 
     for binlogevent in stream:
