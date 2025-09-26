@@ -71,7 +71,7 @@ def collect_binlog_days(start_ts, end_ts):
         # log_file=last_log,
         freeze_schema=True,
         log_pos=4,
-        skip_to_timestamp=int(start_ts)
+        skip_to_timestamp=int(start_ts.timestamp())
     )
 
     for binlogevent in stream:
