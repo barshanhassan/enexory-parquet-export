@@ -126,6 +126,9 @@ def apply_changes_to_parquet(base_folder, changes_by_day):
             
             # 3. Combine the clean base with the new/updated data.
             final_df = pd.concat([day_df, upsert_df], ignore_index=True)
+
+            cols_to_drop = ["file_id", "dst"]
+            final_df = final_df.drop(columns=[c for c in cols_to_drop if c in final_df.columns])
         else:
             # This branch is taken if there were only deletions for this day.
             final_df = day_df
