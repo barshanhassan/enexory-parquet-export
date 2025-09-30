@@ -285,48 +285,48 @@ def main():
 
     print("Pulling completed files via rsync")
     rsync_pull(REMOTE_DIR, LOCAL_BINLOGS_DIR)
-    exit(0)
-    files = sorted([f for f in os.listdir(LOCAL_BINLOGS_DIR) if f.endswith(".txt.gz")])
-    if not files:
-        print("no files to process"); return
 
-    consolidated_changes = {}
-    for fname in files:
-        gzpath = os.path.join(LOCAL_BINLOGS_DIR, fname)
-        print("parsing", gzpath)
-        try:
-            found = parse_mysqlbinlog_verbose_file(gzpath, TABLE, fix_binlog_cols_mapping)
-            for pk, change in found.items():
-                if pk in consolidated_changes and consolidated_changes[pk]['type']=='INSERT' and change['type']=='DELETE':
-                    del consolidated_changes[pk]
-                    continue
-                consolidated_changes[pk] = change
-        finally:
-            # cleanup no matter what
-            try:
-                os.remove(gzpath)
-            except FileNotFoundError:
-                pass
+    # files = sorted([f for f in os.listdir(LOCAL_BINLOGS_DIR) if f.endswith(".txt.gz")])
+    # if not files:
+    #     print("no files to process"); return
 
-    if not consolidated_changes:
-        print("no consolidated changes found"); return
+    # consolidated_changes = {}
+    # for fname in files:
+    #     gzpath = os.path.join(LOCAL_BINLOGS_DIR, fname)
+    #     print("parsing", gzpath)
+    #     try:
+    #         found = parse_mysqlbinlog_verbose_file(gzpath, TABLE, fix_binlog_cols_mapping)
+    #         for pk, change in found.items():
+    #             if pk in consolidated_changes and consolidated_changes[pk]['type']=='INSERT' and change['type']=='DELETE':
+    #                 del consolidated_changes[pk]
+    #                 continue
+    #             consolidated_changes[pk] = change
+    #     finally:
+    #         # cleanup no matter what
+    #         try:
+    #             os.remove(gzpath)
+    #         except FileNotFoundError:
+    #             pass
 
-    # group by day and apply parquet upserts
-    changes_by_day = defaultdict(list)
-    for pk, change in consolidated_changes.items():
-        dt_val = change['data'].get(DT_COL)
-        if dt_val:
-            # Safely format and extract the day part (YYYY-MM-DD)
-            day = custom_formatter(dt_val)[:10]
-            changes_by_day[day].append(change)
+    # if not consolidated_changes:
+    #     print("no consolidated changes found"); return
 
-    if not changes_by_day:
-        print("No changes found for valid day partitions.")
-        return
+    # # group by day and apply parquet upserts
+    # changes_by_day = defaultdict(list)
+    # for pk, change in consolidated_changes.items():
+    #     dt_val = change['data'].get(DT_COL)
+    #     if dt_val:
+    #         # Safely format and extract the day part (YYYY-MM-DD)
+    #         day = custom_formatter(dt_val)[:10]
+    #         changes_by_day[day].append(change)
 
-    print(f"Found changes affecting {len(changes_by_day)} day partition(s). Applying changes...")
-    apply_changes_to_parquet(BASE_FOLDER, changes_by_day)
-    print("\nBinlog merge process finished successfully.")
+    # if not changes_by_day:
+    #     print("No changes found for valid day partitions.")
+    #     return
+
+    # print(f"Found changes affecting {len(changes_by_day)} day partition(s). Applying changes...")
+    # apply_changes_to_parquet(BASE_FOLDER, changes_by_day)
+    # print("\nBinlog merge process finished successfully.")
 
 if __name__ == "__main__":
     main()
