@@ -13,7 +13,7 @@ BASE_FOLDER = "/root/data"
 TABLE = "api_data_timeseries"
 PK_COL = "id"
 DT_COL = "date_time"
-BINLOG_FOLDER="/var/log/mysql/"
+BINLOG_INDEX = "/var/log/mysql/mysql-bin.index"
 
 fix_binlog_cols_mapping = {
     "UNKNOWN_COL0": "id",
@@ -143,38 +143,31 @@ def apply_changes_to_parquet(base_folder, changes_by_day):
         else:
             print(f"Applied {len(changes)} net changes to {file_path}. New row count: {len(final_df)}")
 
-def get_binlog_start_filename(start_ts):
-    """
-    Returns the latest mysql-bin.* filename in BINLOG_FOLDER 
-    whose modification time is strictly before start_ts.
-    """
-    start_epoch = int(start_ts.timestamp())
-    candidates = []
+def parse_binlog_index(index_file=BINLOG_INDEX):
+    with open(index_file, "r") as f:
+        return [line.strip() for line in f if line.strip()]
 
-    for fname in os.listdir(BINLOG_FOLDER):
-        if not fname.startswith("mysql-bin."):
-            continue
-        fpath = os.path.join(BINLOG_FOLDER, fname)
-        try:
-            mtime = int(os.path.getmtime(fpath))
-        except FileNotFoundError:
-            continue
-        if mtime < start_epoch:
-            candidates.append((mtime, fname))
+def get_latest_binlog_before_or_equal(start_ts: datetime, index_file=BINLOG_INDEX):
+    files = parse_binlog_index(index_file)
+    ts_epoch = start_ts.timestamp()
 
-    if not candidates:
-        raise FileNotFoundError(
-            f"No binlog files found in {BINLOG_FOLDER} before {start_ts}"
-        )
+    # First preference: strictly <
+    less_candidates = [f for f in files if os.path.getmtime(f) < ts_epoch]
+    if less_candidates:
+        return os.path.basename(less_candidates[-1])
 
-    latest = max(candidates, key=lambda x: x[0])
-    return latest[1]
+    # Fallback: exact match ==
+    equal_candidates = [f for f in files if os.path.getmtime(f) == ts_epoch]
+    if equal_candidates:
+        return os.path.basename(equal_candidates[0])
+
+    raise FileNotFoundError(f"No binlog file < or = {start_ts}")
 
 def run_binlog_merge_sync():
     """Main function to orchestrate the binlog synchronization process."""
     start_ts, end_ts = get_yesterday_range()
 
-    binlog_start_filename = get_binlog_start_filename(start_ts)
+    binlog_start_filename = get_latest_binlog_before_or_equal(start_ts)
 
     print(f"Starting binlog merge sync for events from {start_ts} to {end_ts}")
 
