@@ -7,6 +7,7 @@ from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.row_event import WriteRowsEvent, UpdateRowsEvent, DeleteRowsEvent
 import fastparquet
 from collections import defaultdict
+from diskcache import Cache
 
 ENV_VAR_MYSQL_CONN_STRING = "MYSQL_CONN_STRING"
 BASE_FOLDER = "/root/data"
@@ -14,6 +15,7 @@ TABLE = "api_data_timeseries"
 PK_COL = "id"
 DT_COL = "date_time"
 BINLOG_INDEX = "/var/log/mysql/mysql-bin.index"
+DISKCACHE_TEMP_FOLDER="/tmp/mycache"
 
 fix_binlog_cols_mapping = {
     "UNKNOWN_COL0": "id",
@@ -56,21 +58,18 @@ def map_binlog_row(raw_row_dict, mapping):
 def collect_and_consolidate_changes(stream, end_ts, mapping):
     """
     Reads the binlog stream and consolidates events down to their net change for each primary key.
-    This version is robust against INSERT/UPDATE/DELETE sequences like:
-    - INSERT -> DELETE (treated as a no-op)
-    - UPDATE -> DELETE (treated as a final DELETE)
-    - DELETE -> INSERT (treated as a final INSERT/UPSERT)
+    Disk-backed version using diskcache.Cache.
     """
-    consolidated_changes = {}
+    consolidated_changes = Cache(os.path.join(DISKCACHE_TEMP_FOLDER, "consolidated"))
 
     for binlogevent in stream:
         if datetime.fromtimestamp(binlogevent.timestamp) >= end_ts:
             print("Reached end of yesterday's time window. Stopping stream.")
             break
-        
+
         if getattr(binlogevent, "table", None) != TABLE:
             continue
-        
+
         for row in binlogevent.rows:
             if isinstance(binlogevent, WriteRowsEvent):
                 mapped_data = map_binlog_row(row['values'], mapping)
@@ -92,7 +91,7 @@ def collect_and_consolidate_changes(stream, end_ts, mapping):
                     del consolidated_changes[pk]
                 else:
                     consolidated_changes[pk] = {'type': 'DELETE', 'data': mapped_data}
-    
+
     return consolidated_changes
 
 def apply_changes_to_parquet(base_folder, changes_by_day):
@@ -169,7 +168,7 @@ def run_binlog_merge_sync():
 
     binlog_start_filename = get_latest_binlog_before_or_equal(start_ts)
 
-    print(f"Starting binlog merge sync for events from {start_ts} to {end_ts}")
+    print(f"Starting binlog merge sync for events from {start_ts} to {end_ts}. Starting binlog file is {binlog_start_filename}")
 
     stream = None
     try:
@@ -192,27 +191,35 @@ def run_binlog_merge_sync():
         if stream:
             stream.close()
 
-    if not consolidated_changes:
+    if len(consolidated_changes) == 0:
         print("No net changes found in the binlog for the specified time window.")
         return
 
     print(f"Consolidated {len(consolidated_changes)} net row changes. Grouping by day partition...")
 
+    changes_by_day = Cache(os.path.join(DISKCACHE_TEMP_FOLDER, "changes_by_day"))
+
     # Group the consolidated changes by their target day
-    changes_by_day = defaultdict(list)
     for pk, change in consolidated_changes.items():
         dt_val = change['data'].get(DT_COL)
         if dt_val:
-            # Safely format and extract the day part (YYYY-MM-DD)
             day = custom_formatter(dt_val)[:10]
-            changes_by_day[day].append(change)
+            bucket = changes_by_day.get(day, [])
+            bucket.append(change)
+            changes_by_day[day] = bucket
+
+    # delete consolidated_changes when no longer needed
+    consolidated_changes.clear()
+    consolidated_changes.close()
     
-    if not changes_by_day:
+    if len(changes_by_day) == 0:
         print("No changes found for valid day partitions.")
         return
 
     print(f"Found changes affecting {len(changes_by_day)} day partition(s). Applying changes...")
     apply_changes_to_parquet(BASE_FOLDER, changes_by_day)
+    changes_by_day.clear()
+    changes_by_day.close()
     print("\nBinlog merge process finished successfully.")
 
 if __name__ == "__main__":
