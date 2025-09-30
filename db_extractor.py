@@ -136,7 +136,7 @@ def main():
         global table, dt_col
         table = "api_data_timeseries"
         dt_col = "date_time"
-        base_folder = "data"
+        base_folder = "/root/data"
 
         os.makedirs(base_folder, exist_ok=True)
         files_exist = bool(glob.glob(os.path.join(base_folder, "*.parquet")))

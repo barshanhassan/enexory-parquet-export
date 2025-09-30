@@ -9,7 +9,7 @@ import fastparquet
 from collections import defaultdict
 
 ENV_VAR_MYSQL_CONN_STRING = "MYSQL_CONN_STRING"
-BASE_FOLDER = "data"
+BASE_FOLDER = "/root/data"
 TABLE = "api_data_timeseries"
 PK_COL = "id"
 DT_COL = "date_time"

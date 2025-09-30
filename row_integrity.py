@@ -18,7 +18,7 @@ def main():
     # --- Configuration ---
     TABLE_NAME = "api_data_timeseries"
     DATE_COLUMN = "date_time"
-    PARQUET_FOLDER = "data"
+    PARQUET_FOLDER = "/root/data"
     ENV_VAR_CONN_STRING = "MYSQL_CONN_STRING"
 
     # --- 1. Get Parquet File Information ---
