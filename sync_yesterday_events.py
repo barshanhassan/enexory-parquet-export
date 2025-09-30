@@ -6,7 +6,6 @@ from datetime import date, timedelta, datetime
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.row_event import WriteRowsEvent, UpdateRowsEvent, DeleteRowsEvent
 import fastparquet
-from collections import defaultdict
 from diskcache import Cache
 
 ENV_VAR_MYSQL_CONN_STRING = "MYSQL_CONN_STRING"
@@ -66,9 +65,6 @@ def collect_and_consolidate_changes(stream, end_ts, mapping):
         if datetime.fromtimestamp(binlogevent.timestamp) >= end_ts:
             print("Reached end of yesterday's time window. Stopping stream.")
             break
-
-        if getattr(binlogevent, "table", None) != TABLE:
-            continue
 
         for row in binlogevent.rows:
             if isinstance(binlogevent, WriteRowsEvent):
@@ -164,6 +160,8 @@ def get_latest_binlog_before_or_equal(start_ts: datetime, index_file=BINLOG_INDE
 
 def run_binlog_merge_sync():
     """Main function to orchestrate the binlog synchronization process."""
+    start_program = datetime.now()
+    
     start_ts, end_ts = get_yesterday_range()
 
     binlog_start_filename = get_latest_binlog_before_or_equal(start_ts)
@@ -176,6 +174,7 @@ def run_binlog_merge_sync():
             connection_settings=conn_str_parsed,
             server_id=25925,  # Must be unique in the replication cluster
             only_schemas=[SCHEMA],
+            only_tables=[TABLE],
             only_events=[WriteRowsEvent, UpdateRowsEvent, DeleteRowsEvent],
             blocking=False,
             resume_stream=False,
@@ -221,6 +220,8 @@ def run_binlog_merge_sync():
     changes_by_day.clear()
     changes_by_day.close()
     print("\nBinlog merge process finished successfully.")
+    end_program = datetime.now()
+    print(f"Program took {(end_program - start_program).total_seconds():.4f} seconds")
 
 if __name__ == "__main__":
     run_binlog_merge_sync()
