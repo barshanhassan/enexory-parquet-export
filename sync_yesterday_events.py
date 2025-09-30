@@ -13,6 +13,7 @@ BASE_FOLDER = "/root/data"
 TABLE = "api_data_timeseries"
 PK_COL = "id"
 DT_COL = "date_time"
+BINLOG_FOLDER="/var/log/mysql/"
 
 fix_binlog_cols_mapping = {
     "UNKNOWN_COL0": "id",
@@ -142,9 +143,39 @@ def apply_changes_to_parquet(base_folder, changes_by_day):
         else:
             print(f"Applied {len(changes)} net changes to {file_path}. New row count: {len(final_df)}")
 
+def get_binlog_start_filename(start_ts):
+    """
+    Returns the latest mysql-bin.* filename in BINLOG_FOLDER 
+    whose modification time is strictly before start_ts.
+    """
+    start_epoch = int(start_ts.timestamp())
+    candidates = []
+
+    for fname in os.listdir(BINLOG_FOLDER):
+        if not fname.startswith("mysql-bin."):
+            continue
+        fpath = os.path.join(BINLOG_FOLDER, fname)
+        try:
+            mtime = int(os.path.getmtime(fpath))
+        except FileNotFoundError:
+            continue
+        if mtime < start_epoch:
+            candidates.append((mtime, fname))
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"No binlog files found in {BINLOG_FOLDER} before {start_ts}"
+        )
+
+    latest = max(candidates, key=lambda x: x[0])
+    return latest[1]
+
 def run_binlog_merge_sync():
     """Main function to orchestrate the binlog synchronization process."""
     start_ts, end_ts = get_yesterday_range()
+
+    binlog_start_filename = get_binlog_start_filename(start_ts)
+
     print(f"Starting binlog merge sync for events from {start_ts} to {end_ts}")
 
     stream = None
@@ -157,7 +188,9 @@ def run_binlog_merge_sync():
             blocking=False,
             resume_stream=False,
             freeze_schema=True,
-            skip_to_timestamp=int(start_ts.timestamp())
+            skip_to_timestamp=int(start_ts.timestamp()),
+            log_pos=4,
+            log_file=binlog_start_filename
         )
 
         print("Streaming binlog to collect and consolidate changes...")
