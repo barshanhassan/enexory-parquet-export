@@ -6,6 +6,7 @@
 #include <cstring>
 #include <arrow/io/api.h>
 #include <arrow/table.h>
+#include <arrow/array.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/writer.h>
 #include <date/date.h>

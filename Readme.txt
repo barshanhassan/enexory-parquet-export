@@ -1,12 +1,12 @@
 Prerequisites to compiling c++ program:
 sudo apt update
 sudo apt get g++
-sudo apt get -y -V  ca-certificates lsb-release wget
+sudo apt install ca-certificates lsb-release wget
 wget https://packages.apache.org/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
-sudo apt install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+sudo apt install ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
 sudo apt update
-sudo apt install -y -V libarrow-dev
-sudo apt install -y -V libparquet-dev
+sudo apt install libarrow-dev
+sudo apt install libparquet-dev
 sudo apt install libsnappy-dev
 
 -------------------------------------------------------------------------------------------------
