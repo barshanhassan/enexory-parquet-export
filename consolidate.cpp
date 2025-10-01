@@ -7,6 +7,7 @@
 #include <arrow/io/api.h>
 #include <arrow/table.h>
 #include <arrow/array.h>
+#include <arrow/builder.h> // Added for builders
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/writer.h>
 #include <date/date.h>
@@ -37,9 +38,8 @@ std::string trim(const std::string& str) {
 }
 
 std::string ts_to_utc2(uint64_t ts) {
-    // Convert Unix timestamp to UTC+2 string with fixed +2 hour offset
     auto tp = std::chrono::system_clock::from_time_t(ts);
-    auto offset_tp = tp + std::chrono::hours(2); // Add fixed +2 hours
+    auto offset_tp = tp + std::chrono::hours(2); // Fixed +2 hours
     return date::format("%F %T", offset_tp);
 }
 
@@ -47,10 +47,10 @@ inline void process_block(char type, uint64_t pk, const std::string& dt,
                          const std::string& val_raw, uint64_t ts,
                          std::unordered_map<std::string, std::vector<Change>>& changes_by_day,
                          std::unordered_map<std::string, std::vector<DeletedEntry>>& deleted_by_day) {
-    if (pk == 0) return; // Skip invalid block
-    if (type != 'D' && (dt.empty() || ts == 0)) return; // Skip invalid INSERT/UPDATE
+    if (pk == 0) return;
+    if (type != 'D' && (dt.empty() || ts == 0)) return;
 
-    std::string day = dt.substr(0, 10); // Extract YYYY-MM-DD
+    std::string day = dt.substr(0, 10);
 
     if (type == 'D') {
         auto& changes = changes_by_day[day];
@@ -58,15 +58,12 @@ inline void process_block(char type, uint64_t pk, const std::string& dt,
                                [pk](const Change& c) { return c.pk == pk; });
         if (it != changes.end()) {
             if (it->type == 'I') {
-                // DELETE after INSERT: remove INSERT and ignore DELETE (no-op)
                 changes.erase(it);
                 return;
             } else {
-                // DELETE after UPDATE: remove UPDATE and add DELETE
                 changes.erase(it);
             }
         }
-        // Add DELETE to deleted_by_day (for UPDATE or no prior entry)
         DeletedEntry entry;
         entry.pk = pk;
         strncpy(entry.dt, dt.c_str(), sizeof(entry.dt) - 1);
@@ -83,7 +80,7 @@ inline void process_block(char type, uint64_t pk, const std::string& dt,
         try {
             val = std::stod(val_raw);
         } catch (...) {
-            return; // Invalid double, skip
+            return;
         }
     }
 
@@ -96,14 +93,12 @@ inline void process_block(char type, uint64_t pk, const std::string& dt,
     strncpy(change.dt, dt.c_str(), sizeof(change.dt) - 1);
     change.dt[sizeof(change.dt) - 1] = '\0';
 
-    // Add or update changes for the day
     auto& changes = changes_by_day[day];
     auto it = std::find_if(changes.begin(), changes.end(), 
                            [pk](const Change& c) { return c.pk == pk; });
     if (it == changes.end()) {
         changes.push_back(change);
     } else {
-        // Update existing change (preserve INSERT type if original)
         if (it->type == 'I' && type == 'U') {
             change.type = 'I';
         }
@@ -115,27 +110,36 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
                         const std::vector<DeletedEntry>& deleted, const std::string& base_folder) {
     std::string file_path = base_folder + "/" + day + ".parquet";
 
-    // Early exit if no changes or deletions
     if (changes.empty() && deleted.empty()) {
         return;
     }
 
-    // Define Parquet schema
     auto id_field = arrow::field("id", arrow::uint64());
     auto dt_field = arrow::field("date_time", arrow::utf8());
-    auto value_field = arrow::field("value", arrow::float64(), true); // Nullable
+    auto value_field = arrow::field("value", arrow::float64(), true);
     auto ts_field = arrow::field("ts", arrow::utf8());
     auto schema = arrow::schema({id_field, dt_field, value_field, ts_field});
 
-    // Read existing Parquet file (if exists)
     std::shared_ptr<arrow::Table> table;
     arrow::MemoryPool* pool = arrow::default_memory_pool();
     std::shared_ptr<arrow::io::ReadableFile> infile;
-    auto status = arrow::io::ReadableFile::Open(file_path, pool, &infile);
-    if (status.ok()) {
+
+    // Open the Parquet file
+    auto open_result = arrow::io::ReadableFile::Open(file_path, pool);
+    if (open_result.ok()) {
+        infile = *open_result;
         std::unique_ptr<parquet::arrow::FileReader> reader;
-        parquet::arrow::OpenFile(infile, pool, &reader);
-        reader->ReadTable(&table);
+        auto reader_result = parquet::arrow::OpenFile(infile, pool);
+        if (!reader_result.ok()) {
+            std::cerr << "Failed to open Parquet reader for " << file_path << ": " << reader_result.status().message() << "\n";
+            return;
+        }
+        reader = *reader_result;
+        auto read_status = reader->ReadTable(&table);
+        if (!read_status.ok()) {
+            std::cerr << "Failed to read table from " << file_path << ": " << read_status.message() << "\n";
+            return;
+        }
     } else {
         // Create empty table if file doesn't exist
         std::vector<std::shared_ptr<arrow::Array>> arrays = {
@@ -147,7 +151,6 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         table = arrow::Table::Make(schema, arrays);
     }
 
-    // Convert table to vectors for manipulation
     auto id_array = std::static_pointer_cast<arrow::UInt64Array>(table->column(0)->chunk(0));
     auto dt_array = std::static_pointer_cast<arrow::StringArray>(table->column(1)->chunk(0));
     auto value_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
@@ -169,7 +172,6 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         tss.push_back(ts_array->GetString(i));
     }
 
-    // Build set of pks to remove
     std::unordered_set<uint64_t> pks_to_remove;
     pks_to_remove.reserve(deleted.size() + changes.size());
     for (const auto& del : deleted) {
@@ -179,7 +181,6 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         pks_to_remove.insert(change.pk);
     }
 
-    // Filter existing rows
     std::vector<uint64_t> new_ids;
     std::vector<std::string> new_dts;
     std::vector<std::optional<double>> new_values;
@@ -198,7 +199,6 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         }
     }
 
-    // Append new/updated rows
     for (const auto& change : changes) {
         new_ids.push_back(change.pk);
         new_dts.push_back(change.dt);
@@ -206,7 +206,6 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         new_tss.push_back(ts_to_utc2(change.ts));
     }
 
-    // Create new Arrow arrays
     arrow::UInt64Builder id_builder;
     arrow::StringBuilder dt_builder, ts_builder;
     arrow::DoubleBuilder value_builder;
@@ -222,37 +221,48 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
     }
 
     std::shared_ptr<arrow::Array> new_id_array, new_dt_array, new_value_array, new_ts_array;
-    id_builder.Finish(&new_id_array);
-    dt_builder.Finish(&new_dt_array);
-    value_builder.Finish(&new_value_array);
-    ts_builder.Finish(&new_ts_array);
-
-    // Create new table
-    auto new_table = arrow::Table::Make(schema, {new_id_array, new_dt_array, new_value_array, new_ts_array});
-
-    // Write to Parquet
-    std::shared_ptr<arrow::io::FileOutputStream> outfile;
-    status = arrow::io::FileOutputStream::Open(file_path, &outfile);
-    if (!status.ok()) {
-        std::cerr << "Failed to open " << file_path << ": " << status.message() << "\n";
+    auto id_status = id_builder.Finish(&new_id_array);
+    auto dt_status = dt_builder.Finish(&new_dt_array);
+    auto value_status = value_builder.Finish(&new_value_array);
+    auto ts_status = ts_builder.Finish(&new_ts_array);
+    if (!id_status.ok() || !dt_status.ok() || !value_status.ok() || !ts_status.ok()) {
+        std::cerr << "Failed to build arrays: " << id_status.message() << ", " << dt_status.message() << ", "
+                  << value_status.message() << ", " << ts_status.message() << "\n";
         return;
     }
+
+    auto new_table = arrow::Table::Make(schema, {new_id_array, new_dt_array, new_value_array, new_ts_array});
+
+    std::shared_ptr<arrow::io::FileOutputStream> outfile;
+    auto open_outfile = arrow::io::FileOutputStream::Open(file_path);
+    if (!open_outfile.ok()) {
+        std::cerr << "Failed to open " << file_path << ": " << open_outfile.status().message() << "\n";
+        return;
+    }
+    outfile = *open_outfile;
+
     parquet::WriterProperties::Builder builder;
     builder.compression(parquet::Compression::SNAPPY);
-    parquet::arrow::WriteTable(*new_table, pool, outfile, 1024 * 1024, builder.build());
+    auto write_status = parquet::arrow::WriteTable(*new_table, pool, outfile, 1024 * 1024, builder.build());
+    if (!write_status.ok()) {
+        std::cerr << "Failed to write table to " << file_path << ": " << write_status.message() << "\n";
+        return;
+    }
 
     std::cout << "Updated " << file_path << " with " << changes.size() << " changes and " 
               << deleted.size() << " deletions. New row count: " << new_table->num_rows() << "\n";
 }
 
 int main() {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
 
     std::unordered_map<std::string, std::vector<Change>> changes_by_day;
     std::unordered_map<std::string, std::vector<DeletedEntry>> deleted_by_day;
-    changes_by_day.reserve(15); // Adjust based on expected days
-    deleted_by_day.reserve(15);
+    changes_by_day.reserve(20);
+    deleted_by_day.reserve(20);
 
     char current_type = 0;
     bool in_where = false, in_set = false;
@@ -335,7 +345,6 @@ int main() {
         process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
     }
 
-    // Update Parquet files in parallel
     const std::string base_folder = "/root/data";
     std::filesystem::create_directories(base_folder);
     std::vector<std::thread> threads;
@@ -346,6 +355,11 @@ int main() {
     for (auto& t : threads) {
         t.join();
     }
+
+    // End timer and print elapsed time
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    std::cout << "Total execution time: " << duration.count() / 1000.0 << " seconds\n";
 
     return 0;
 }
