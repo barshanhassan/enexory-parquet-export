@@ -123,6 +123,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
     std::shared_ptr<arrow::Table> table;
     arrow::MemoryPool* pool = arrow::default_memory_pool();
     std::shared_ptr<arrow::io::ReadableFile> infile;
+    bool file_exists = std::filesystem::exists(file_path);
 
     auto open_result = arrow::io::ReadableFile::Open(file_path, pool);
     if (open_result.ok()) {
@@ -133,7 +134,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
             std::cerr << "Failed to open Parquet reader for " << file_path << ": " << reader_result.status().message() << "\n";
             return;
         }
-        reader = std::move(*reader_result); // Use std::move for unique_ptr
+        reader = std::move(*reader_result);
         auto read_status = reader->ReadTable(&table);
         if (!read_status.ok()) {
             std::cerr << "Failed to read table from " << file_path << ": " << read_status.message() << "\n";
@@ -202,6 +203,24 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         new_dts.push_back(change.dt);
         new_values.push_back(change.val_is_null ? std::nullopt : std::optional<double>(change.val));
         new_tss.push_back(ts_to_utc2(change.ts));
+    }
+
+    // If the resulting table is empty and the file exists, delete it
+    if (new_ids.empty() && file_exists) {
+        try {
+            std::filesystem::remove(file_path);
+            std::cout << "Deleted " << file_path << ": No rows remain ("
+                      << changes.size() << " changes, " << deleted.size() << " deletions)\n";
+        } catch (const std::filesystem::filesystem_error& e) {
+            std::cerr << "Failed to delete " << file_path << ": " << e.what() << "\n";
+        }
+        return;
+    }
+    // Skip writing if the resulting table is empty and no file exists
+    if (new_ids.empty()) {
+        std::cout << "Skipped writing " << file_path << ": No rows to write ("
+                  << changes.size() << " changes, " << deleted.size() << " deletions)\n";
+        return;
     }
 
     arrow::UInt64Builder id_builder;

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Example run: ./parse_binlogs.sh --binlog-folder=/var/log/mysql --days-back=2
+# Example run: ./parse_binlogs.sh --binlog-folder=/var/log/mysql --days-back=1
 
 BINLOG_FOLDER=""
 DAYS_BACK=""
@@ -148,17 +148,19 @@ echo "Processing $START_DATETIME to $STOP_DATETIME (days back: $DAYS_BACK)"
 echo "Start file: $start_file (num: $start_num)"
 echo "End file: $end_file (num: $end_num)"
 
-# Generate full path list from start_num to end_num (assuming consecutive) as an array
+# Generate file list from mysql-bin.index within start_num to end_num
 files=()
-for i in $(seq "$start_num" "$end_num"); do
-    file_name=$(printf 'mysql-bin.%06d' "$i")
-    full_path="${BINLOG_FOLDER}/${file_name}"
-    if [[ -f "$full_path" ]]; then
-        files+=("$full_path")
-    else
-        echo "Warning: Skipping missing file $full_path" >&2
+while IFS= read -r file; do
+    num=$(basename "$file" | sed -E 's/.*\.([0-9]{6})$/\1/' | sed 's/^0*//')
+    if [[ -n "$num" && "$num" -ge "$start_num" && "$num" -le "$end_num" && -f "$file" ]]; then
+        files+=("$file")
     fi
-done
+done < <(parse_index "$BINLOG_INDEX")
+
+if [[ ${#files[@]} -eq 0 ]]; then
+    echo "Error: No valid files in range" >&2
+    exit 1
+fi
 
 if [[ ${#files[@]} -eq 0 ]]; then
     echo "Error: No valid files in range" >&2
@@ -166,7 +168,7 @@ if [[ ${#files[@]} -eq 0 ]]; then
 fi
 
 # Run mysqlbinlog pipeline and pipe directly to C++ consolidator
-mysqlbinlog --verbose --database=enexory \
+mysqlbinlog --verbose \
   --start-datetime="$START_DATETIME" \
   --stop-datetime="$STOP_DATETIME" \
   "${files[@]}" \
