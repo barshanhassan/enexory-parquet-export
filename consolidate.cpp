@@ -10,7 +10,7 @@
 struct Change {
     char type;  // 'I', 'U', or 'D'
     std::string dt;
-    double val;
+    std::string val;  // String to handle NULL safely
     uint64_t ts;
 };
 
@@ -45,23 +45,24 @@ void process_block(char type, const std::vector<std::string>& block, std::unorde
         std::smatch match;
         if (std::regex_match(tl, match, assignment)) {
             std::string col = "@" + match[1].str();
-            std::string val = trim(match[2].str());
+            std::string raw_val = trim(match[2].str());
 
-            // Handle quoted datetime strings (remove outer single quotes)
-            if (!val.empty() && val.front() == '\'' && val.back() == '\'') {
+            // Handle quoted datetime strings (remove outer single quotes for @3)
+            std::string val = raw_val;
+            if (col == "@3" && !val.empty() && val.front() == '\'' && val.back() == '\'') {
                 val = val.substr(1, val.size() - 2);
             }
 
             if (in_where) {
-                where_vals[col] = val;
+                where_vals[col] = raw_val;  // Keep original for output consistency
             } else if (in_set) {
-                set_vals[col] = val;
+                set_vals[col] = raw_val;
             } else {
                 // For INSERT (no WHERE/SET) or DELETE (no SET), treat as set/where
                 if (type == 'I') {
-                    set_vals[col] = val;
+                    set_vals[col] = raw_val;
                 } else if (type == 'D') {
-                    where_vals[col] = val;
+                    where_vals[col] = raw_val;
                 }
             }
         }
@@ -72,10 +73,19 @@ void process_block(char type, const std::vector<std::string>& block, std::unorde
     auto pk_it = data_vals.find("@1");
     if (pk_it == data_vals.end()) return;  // Missing PK, skip invalid block
 
-    uint64_t pk = std::stoull(pk_it->second);
-    std::string dt = data_vals.count("@3") ? data_vals.at("@3") : "";
-    double val = data_vals.count("@4") ? std::stod(data_vals.at("@4")) : 0.0;
-    uint64_t ts = data_vals.count("@6") ? std::stoull(data_vals.at("@6")) : 0ULL;
+    uint64_t pk = std::stoull(pk_it->second);  // PK always valid per DDL
+    std::string dt = data_vals.count("@3") ? data_vals.at("@3") : "";  // Always present, but strip quotes if needed (handled above)
+    std::string val_raw = data_vals.count("@4") ? data_vals.at("@4") : "NULL";
+    std::string val = "NULL";
+    if (val_raw != "NULL") {
+        try {
+            double dummy = std::stod(val_raw);
+            val = val_raw;  // Valid double, use raw
+        } catch (...) {
+            val = "NULL";  // Invalid, set to NULL
+        }
+    }
+    uint64_t ts = std::stoull(data_vals.at("@6"));  // ts always valid per DDL
 
     auto it = consolidated.find(pk);
     if (type == 'I') {
@@ -125,7 +135,7 @@ int main() {
             current_type = 'D';
         }
 
-        // Add line to current block (skip if not part of statement body)
+        // Add line to current block (only if part of a statement)
         if (current_type != 0) {
             current_block.push_back(line);  // Store original for accurate parsing
         }
@@ -136,11 +146,18 @@ int main() {
         process_block(current_type, current_block, consolidated);
     }
 
-    // Output consolidated changes
+    // Output consolidated changes as CSV (single line per entry)
     for (const auto& p : consolidated) {
         uint64_t pk = p.first;
         const Change& change = p.second;
-        std::cout << pk << ", '" << change.dt << "', " << change.val << ", " << change.ts << ", " << change.type << std::endl;
+        std::cout << pk << ",";
+        std::cout << "'" << change.dt << "',";  // dt always non-null, quoted
+        if (change.val == "NULL") {
+            std::cout << "NULL";
+        } else {
+            std::cout << change.val;
+        }
+        std::cout << "," << change.ts << "," << change.type << std::endl;
     }
 
     return 0;
