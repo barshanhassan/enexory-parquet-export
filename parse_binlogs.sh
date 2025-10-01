@@ -1,13 +1,9 @@
 #!/bin/bash
 
-# No defaults; all args required
+# Example run: ./parse_binlogs.sh --binlog-folder=/var/log/mysql --days-back=2
 
-# Example run: ./parse_binlogs.sh --binlog-folder /var/log/mysql --start-datetime '2025-09-29 00:00:00' --stop-datetime '2025-09-30 00:00:00' --output-file events.csv
-
-START_DATETIME=""
-STOP_DATETIME=""
 BINLOG_FOLDER=""
-OUTPUT_FILE=""
+DAYS_BACK=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -25,48 +21,22 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             ;;
-        --start-datetime=*)
-            START_DATETIME="${1#*=}"
+        --days-back=*)
+            DAYS_BACK="${1#*=}"
             shift
             ;;
-        --stop-datetime=*)
-            STOP_DATETIME="${1#*=}"
-            shift
-            ;;
-        --start-datetime)
+        --days-back)
             if [[ -n $2 ]]; then
-                START_DATETIME="$2"
+                DAYS_BACK="$2"
                 shift 2
             else
-                echo "Error: --start-datetime requires a value" >&2
-                exit 1
-            fi
-            ;;
-        --stop-datetime)
-            if [[ -n $2 ]]; then
-                STOP_DATETIME="$2"
-                shift 2
-            else
-                echo "Error: --stop-datetime requires a value" >&2
-                exit 1
-            fi
-            ;;
-        --output-file=*)
-            OUTPUT_FILE="${1#*=}"
-            shift
-            ;;
-        --output-file)
-            if [[ -n $2 ]]; then
-                OUTPUT_FILE="$2"
-                shift 2
-            else
-                echo "Error: --output-file requires a value" >&2
+                echo "Error: --days-back requires a value" >&2
                 exit 1
             fi
             ;;
         *)
             echo "Unknown option: $1" >&2
-            echo "Usage: $0 --binlog-folder=/path/to/folder --start-datetime=YYYY-MM-DD HH:MM:SS --stop-datetime=YYYY-MM-DD HH:MM:SS --output-file=filename.txt" >&2
+            echo "Usage: $0 --binlog-folder=/path/to/folder --days-back=N" >&2
             exit 1
             ;;
     esac
@@ -77,16 +47,8 @@ if [[ -z "$BINLOG_FOLDER" ]]; then
     echo "Error: --binlog-folder is required" >&2
     exit 1
 fi
-if [[ -z "$START_DATETIME" ]]; then
-    echo "Error: --start-datetime is required" >&2
-    exit 1
-fi
-if [[ -z "$STOP_DATETIME" ]]; then
-    echo "Error: --stop-datetime is required" >&2
-    exit 1
-fi
-if [[ -z "$OUTPUT_FILE" ]]; then
-    echo "Error: --output-file is required" >&2
+if [[ -z "$DAYS_BACK" || ! "$DAYS_BACK" =~ ^[0-9]+$ ]]; then
+    echo "Error: --days-back must be a non-negative integer" >&2
     exit 1
 fi
 
@@ -98,14 +60,32 @@ if [[ ! -f "$BINLOG_INDEX" ]]; then
     exit 1
 fi
 
+# Calculate start and stop datetimes in UTC+2
+# Get current date in UTC+2
+CURRENT_DATE=$(TZ=UTC-2 date +%F)
+START_DATE=$(TZ=UTC-2 date -d "$CURRENT_DATE - $DAYS_BACK days" +%F)
+STOP_DATE=$(TZ=UTC-2 date -d "$CURRENT_DATE - $DAYS_BACK days + 1 day" +%F)
+START_DATETIME="${START_DATE} 00:00:00"
+STOP_DATETIME="${STOP_DATE} 00:00:00"
+
+# Validate datetimes
+if ! date -d "$START_DATETIME" >/dev/null 2>&1; then
+    echo "Error: Invalid start datetime '$START_DATETIME'" >&2
+    exit 1
+fi
+if ! date -d "$STOP_DATETIME" >/dev/null 2>&1; then
+    echo "Error: Invalid stop datetime '$STOP_DATETIME'" >&2
+    exit 1
+fi
+
 # Helper to parse index: full paths, stripped
 parse_index() {
     grep -v '^[[:space:]]*$' "$1" | sed 's/[[:space:]]*$//'
 }
 
-# Get epoch ts from datetime
+# Get epoch ts from datetime (in UTC+2)
 get_ts() {
-    date -d "$1" +%s 2>/dev/null || {
+    TZ=UTC-2 date -d "$1" +%s 2>/dev/null || {
         echo "Error: Invalid datetime '$1'" >&2
         exit 1
     }
@@ -164,6 +144,7 @@ end_file=$(get_end_file "$stop_ts")
 start_num=$(basename "$start_file" | sed -E 's/.*\.([0-9]{6})$/\1/' | sed 's/^0*//')
 end_num=$(basename "$end_file" | sed -E 's/.*\.([0-9]{6})$/\1/' | sed 's/^0*//')
 
+echo "Processing $START_DATETIME to $STOP_DATETIME (days back: $DAYS_BACK)"
 echo "Start file: $start_file (num: $start_num)"
 echo "End file: $end_file (num: $end_num)"
 
@@ -184,7 +165,7 @@ if [[ ${#files[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# Run mysqlbinlog pipeline and pipe to C++ consolidator
+# Run mysqlbinlog pipeline and pipe directly to C++ consolidator
 mysqlbinlog --verbose --database=enexory \
   --start-datetime="$START_DATETIME" \
   --stop-datetime="$STOP_DATETIME" \
@@ -204,6 +185,6 @@ mysqlbinlog --verbose --database=enexory \
             in_stmt=0 
         }
     }
-  ' | ./consolidate > "$OUTPUT_FILE"
+  ' | ./consolidate
 
-echo "Consolidated output written to $OUTPUT_FILE"
+echo "Sync fully complete."
