@@ -254,7 +254,9 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
     std::shared_ptr<arrow::io::FileOutputStream> outfile;
     auto open_outfile = arrow::io::FileOutputStream::Open(file_path);
     if (!open_outfile.ok()) {
-        std::cerr << "Failed to open " << file_path << ": " << open_outfile.status().message() << "\n";
+        if (file_exists) {
+            std::cerr << "Failed to open " << file_path << ": " << open_outfile.status().message() << "\n";
+        }
         return;
     }
     outfile = *open_outfile;
@@ -366,13 +368,11 @@ int main() {
 
     const std::string base_folder = "/root/data";
     std::filesystem::create_directories(base_folder);
-    std::vector<std::thread> threads;
-    for (const auto& p : changes_by_day) {
-        const std::string& day = p.first;
-        threads.emplace_back(update_parquet_file, day, p.second, deleted_by_day[day], base_folder);
-    }
-    for (auto& t : threads) {
-        t.join();
+    for (auto it = changes_by_day.begin(); it != changes_by_day.end(); ) {
+        const std::string& day = it->first;
+        update_parquet_file(day, it->second, deleted_by_day[day], base_folder);
+        it = changes_by_day.erase(it); // Clear memory for changes
+        deleted_by_day.erase(day); // Clear memory for deletions
     }
 
     // End timer and print elapsed time
