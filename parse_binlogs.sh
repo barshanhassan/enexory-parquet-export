@@ -1,13 +1,14 @@
 #!/bin/bash
 
-# Example run: ./parse_binlogs.sh --binlog-folder /var/log/mysql --start-datetime '2025-09-29 00:00:00' --stop-datetime '2025-09-30 00:00:00' --output-file filtered_events.sql
-
 # No defaults; all args required
+
+# Example run: ./parse_binlogs.sh --binlog-folder /var/log/mysql --start-datetime '2025-09-29 00:00:00' --stop-datetime '2025-09-30 00:00:00' --output-file filtered_events.sql --compress
 
 START_DATETIME=""
 STOP_DATETIME=""
 BINLOG_FOLDER=""
 OUTPUT_FILE=""
+COMPRESS=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -64,9 +65,13 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             ;;
+        --compress)
+            COMPRESS=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1" >&2
-            echo "Usage: $0 --binlog-folder=/path/to/folder --start-datetime=YYYY-MM-DD HH:MM:SS --stop-datetime=YYYY-MM-DD HH:MM:SS --output-file=filename.sql" >&2
+            echo "Usage: $0 --binlog-folder=/path/to/folder --start-datetime=YYYY-MM-DD HH:MM:SS --stop-datetime=YYYY-MM-DD HH:MM:SS [--output-file=filename.sql] [--compress]" >&2
             exit 1
             ;;
     esac
@@ -184,6 +189,16 @@ if [[ ${#files[@]} -eq 0 ]]; then
     exit 1
 fi
 
+# Prepare output file and compression pipe
+COMPRESSED_OUTPUT="${OUTPUT_FILE}.gz"
+if [[ "$COMPRESS" == true ]]; then
+    PIPE_CMD="| gzip -c"
+    FINAL_OUTPUT="$COMPRESSED_OUTPUT"
+else
+    PIPE_CMD=""
+    FINAL_OUTPUT="$OUTPUT_FILE"
+fi
+
 # Run mysqlbinlog pipeline
 mysqlbinlog --verbose --database=enexory \
   --start-datetime="$START_DATETIME" \
@@ -204,6 +219,6 @@ mysqlbinlog --verbose --database=enexory \
             in_stmt=0 
         }
     }
-  ' > "$OUTPUT_FILE"
+  ' $PIPE_CMD > "$FINAL_OUTPUT"
 
-echo "Output written to $OUTPUT_FILE"
+echo "Output written to $FINAL_OUTPUT"
