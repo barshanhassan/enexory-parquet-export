@@ -13,6 +13,11 @@ struct Change {
     bool val_is_null; // Flag for NULL value
 };
 
+struct DeletedEntry {
+    uint64_t pk;      // Primary key
+    char dt[20];      // Fixed-size for 'YYYY-MM-DD HH:MM:SS'
+};
+
 std::string trim(const std::string& str) {
     size_t start = 0;
     while (start < str.size() && (str[start] == ' ' || str[start] == '\t')) ++start;
@@ -24,7 +29,7 @@ std::string trim(const std::string& str) {
 inline void process_block(char type, uint64_t pk, const std::string& dt, 
                          const std::string& val_raw, uint64_t ts,
                          std::unordered_map<uint64_t, Change>& consolidated,
-                         std::vector<uint64_t>& deleted) {
+                         std::vector<DeletedEntry>& deleted) {
     if (pk == 0) return; // Skip invalid block
     if (type != 'D' && (dt.empty() || ts == 0)) return; // Skip invalid INSERT/UPDATE
 
@@ -36,10 +41,18 @@ inline void process_block(char type, uint64_t pk, const std::string& dt,
                 consolidated.erase(pk); // No-op for INSERT
             } else { // UPDATE
                 consolidated.erase(pk);
-                deleted.push_back(pk);
+                DeletedEntry entry;
+                entry.pk = pk;
+                strncpy(entry.dt, dt.c_str(), sizeof(entry.dt) - 1);
+                entry.dt[sizeof(entry.dt) - 1] = '\0';
+                deleted.push_back(entry);
             }
         } else {
-            deleted.push_back(pk);
+            DeletedEntry entry;
+            entry.pk = pk;
+            strncpy(entry.dt, dt.c_str(), sizeof(entry.dt) - 1);
+            entry.dt[sizeof(entry.dt) - 1] = '\0';
+            deleted.push_back(entry);
         }
         return;
     }
@@ -83,9 +96,9 @@ int main() {
     std::cin.tie(nullptr);            // Untie cin/cout for faster input
 
     std::unordered_map<uint64_t, Change> consolidated;
-    std::vector<uint64_t> deleted;
+    std::vector<DeletedEntry> deleted;
     consolidated.reserve(1000000); // Pre-allocate for ~1M entries (~53MB)
-    deleted.reserve(1000000);      // Pre-allocate for ~1M deletes (~8MB)
+    deleted.reserve(1000000);      // Pre-allocate for ~1M deletes (~28MB)
     char current_type = 0;         // 0: none, 'I': INSERT, 'U': UPDATE, 'D': DELETE
     bool in_where = false, in_set = false;
     uint64_t pk = 0, ts = 0;
@@ -150,11 +163,11 @@ int main() {
                     if (c < '0' || c > '9') { pk = 0; break; } // Non-numeric, invalidate
                     pk = pk * 10 + (c - '0');
                 }
+            } else if (col == "@3") { // Parse dt for all types
+                dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
+                     val.substr(1, val.size() - 2) : val;
             } else if (current_type != 'D') { // Skip for DELETE
-                if (col == "@3") {
-                    dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
-                         val.substr(1, val.size() - 2) : val;
-                } else if (col == "@4") {
+                if (col == "@4") {
                     val_raw = (val == "NULL") ? "NULL" : val;
                 } else if (col == "@6") {
                     ts = 0;
@@ -183,10 +196,10 @@ int main() {
                           change.ts);
         std::cout.write(output_buffer, len);
     }
-    // Output deleted rows (type 'D', pk only)
-    for (uint64_t pk : deleted) {
+    // Output deleted rows (type 'D', pk, dt)
+    for (const auto& entry : deleted) {
         int len = snprintf(output_buffer, sizeof(output_buffer), 
-                          "D,%lu\n", pk);
+                          "D,%lu,'%s'\n", entry.pk, entry.dt);
         std::cout.write(output_buffer, len);
     }
 
