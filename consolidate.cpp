@@ -1,92 +1,149 @@
 #include <iostream>
 #include <unordered_map>
-#include <vector>
 #include <string>
 #include <cstdint>
-#include <sstream>
-#include <regex>
-#include <algorithm>
+#include <cstring>
 
 struct Change {
-    char type;  // 'I', 'U', or 'D'
-    std::string dt;
-    std::string val;  // String to handle NULL safely
-    uint64_t ts;
+    char type;  // 'I', 'U', 'D'
+    std::string dt;  // Keep as string for datetime (quoted in output)
+    std::string val; // String to handle NULL
+    uint64_t ts;     // Numeric for efficiency
 };
 
-std::string trim(const std::string& str) {
-    size_t first = str.find_first_not_of(" \t");
-    if (first == std::string::npos) return "";
-    size_t last = str.find_last_not_of(" \t");
-    return str.substr(first, (last - first + 1));
+std::string_view trim(std::string_view sv) {
+    size_t start = 0;
+    while (start < sv.size() && (sv[start] == ' ' || sv[start] == '\t')) ++start;
+    size_t end = sv.size();
+    while (end > start && (sv[end - 1] == ' ' || sv[end - 1] == '\t')) --end;
+    return sv.substr(start, end - start);
 }
 
-// Helper to process a single statement block and update consolidated map
-void process_block(char type, const std::vector<std::string>& block, std::unordered_map<uint64_t, Change>& consolidated) {
-    std::unordered_map<std::string, std::string> where_vals, set_vals;
-    bool in_where = false;
-    bool in_set = false;
+int main() {
+    std::ios::sync_with_stdio(false); // Speed up I/O
+    std::cin.tie(nullptr);            // Untie cin/cout for faster input
 
-    for (const auto& l : block) {
-        std::string tl = trim(l);
-        if (tl == "WHERE") {
+    std::unordered_map<uint64_t, Change> consolidated;
+    char current_type = 0;  // 0: none, 'I': INSERT, 'U': UPDATE, 'D': DELETE
+    bool in_where = false, in_set = false;
+    uint64_t pk = 0;
+    std::string dt, val_raw, ts_raw;
+    char output_buffer[512]; // Fixed-size for CSV output (adjust if needed)
+
+    std::string line;
+    line.reserve(256); // Pre-allocate to reduce reallocations
+
+    while (std::getline(std::cin, line)) {
+        std::string_view tline = trim(line);
+        if (tline.empty()) continue;
+
+        // Detect new statement
+        if (tline == "INSERT INTO `enexory`.`api_data_timeseries`") {
+            // Process previous block if complete
+            if (current_type != 0 && pk != 0) {
+                process_block(current_type, pk, dt, val_raw, ts_raw, consolidated);
+                pk = 0; dt.clear(); val_raw.clear(); ts_raw.clear();
+            }
+            current_type = 'I';
+            in_where = false;
+            in_set = false;
+            continue;
+        } else if (tline == "UPDATE `enexory`.`api_data_timeseries`") {
+            if (current_type != 0 && pk != 0) {
+                process_block(current_type, pk, dt, val_raw, ts_raw, consolidated);
+                pk = 0; dt.clear(); val_raw.clear(); ts_raw.clear();
+            }
+            current_type = 'U';
+            in_where = false;
+            in_set = false;
+            continue;
+        } else if (tline == "DELETE FROM `enexory`.`api_data_timeseries`") {
+            if (current_type != 0 && pk != 0) {
+                process_block(current_type, pk, dt, val_raw, ts_raw, consolidated);
+                pk = 0; dt.clear(); val_raw.clear(); ts_raw.clear();
+            }
+            current_type = 'D';
+            in_where = false;
+            in_set = false;
+            continue;
+        } else if (tline == "WHERE") {
             in_where = true;
             in_set = false;
             continue;
-        }
-        if (tl == "SET") {
+        } else if (tline == "SET") {
             in_where = false;
             in_set = true;
             continue;
         }
 
         // Parse @n=value lines
-        std::regex assignment(R"(^\s*@(\d+)=(.+)$)");
-        std::smatch match;
-        if (std::regex_match(tl, match, assignment)) {
-            std::string col = "@" + match[1].str();
-            std::string raw_val = trim(match[2].str());
+        if (current_type != 0 && tline.size() > 3 && tline[0] == '@') {
+            size_t eq_pos = tline.find('=');
+            if (eq_pos == std::string_view::npos) continue;
+            std::string_view col = tline.substr(0, eq_pos);
+            std::string_view val = trim(tline.substr(eq_pos + 1));
 
-            // Handle quoted datetime strings (remove outer single quotes for @3)
-            std::string val = raw_val;
-            if (col == "@3" && !val.empty() && val.front() == '\'' && val.back() == '\'') {
-                val = val.substr(1, val.size() - 2);
-            }
-
-            if (in_where) {
-                where_vals[col] = raw_val;  // Keep original for output consistency
-            } else if (in_set) {
-                set_vals[col] = raw_val;
-            } else {
-                // For INSERT (no WHERE/SET) or DELETE (no SET), treat as set/where
-                if (type == 'I') {
-                    set_vals[col] = raw_val;
-                } else if (type == 'D') {
-                    where_vals[col] = raw_val;
+            if (col == "@1") {
+                pk = 0;
+                for (char c : val) {
+                    if (c < '0' || c > '9') break; // Non-numeric, skip
+                    pk = pk * 10 + (c - '0');
                 }
+            } else if (col == "@3") {
+                dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
+                     std::string(val.substr(1, val.size() - 2)) : std::string(val);
+            } else if (col == "@4") {
+                val_raw = (val == "NULL") ? "NULL" : std::string(val);
+            } else if (col == "@6") {
+                ts_raw = std::string(val);
             }
         }
     }
 
-    // Select data source: SET for I/U, WHERE for D
-    const auto& data_vals = (type == 'D' ? where_vals : set_vals);
-    auto pk_it = data_vals.find("@1");
-    if (pk_it == data_vals.end()) return;  // Missing PK, skip invalid block
+    // Process final block
+    if (current_type != 0 && pk != 0) {
+        process_block(current_type, pk, dt, val_raw, ts_raw, consolidated);
+    }
 
-    uint64_t pk = std::stoull(pk_it->second);  // PK always valid per DDL
-    std::string dt = data_vals.count("@3") ? data_vals.at("@3") : "";  // Always present, but strip quotes if needed (handled above)
-    std::string val_raw = data_vals.count("@4") ? data_vals.at("@4") : "NULL";
+    // Output consolidated changes as CSV
+    for (const auto& p : consolidated) {
+        uint64_t pk = p.first;
+        const Change& change = p.second;
+        int len = snprintf(output_buffer, sizeof(output_buffer), 
+                          "%llu,'%s',%s,%llu,%c\n",
+                          pk, change.dt.c_str(), change.val.c_str(), change.ts, change.type);
+        std::cout.write(output_buffer, len);
+    }
+
+    return 0;
+}
+
+inline void process_block(char type, uint64_t pk, const std::string& dt, 
+                         const std::string& val_raw, const std::string& ts_raw,
+                         std::unordered_map<uint64_t, Change>& consolidated) {
+    if (pk == 0 || ts_raw.empty()) return; // Skip invalid block
+
+    // Validate and convert ts
+    uint64_t ts = 0;
+    for (char c : ts_raw) {
+        if (c < '0' || c > '9') return; // Non-numeric, skip
+        ts = ts * 10 + (c - '0');
+    }
+
+    // Validate val (NULL or valid double)
     std::string val = "NULL";
     if (val_raw != "NULL") {
+        bool valid = true;
         try {
             double dummy = std::stod(val_raw);
-            val = val_raw;  // Valid double, use raw
+            val = val_raw;
         } catch (...) {
-            val = "NULL";  // Invalid, set to NULL
+            valid = false;
         }
+        if (!valid) return; // Invalid double, skip
     }
-    uint64_t ts = std::stoull(data_vals.at("@6"));  // ts always valid per DDL
 
+    // Consolidation logic
     auto it = consolidated.find(pk);
     if (type == 'I') {
         consolidated[pk] = {'I', dt, val, ts};
@@ -101,64 +158,4 @@ void process_block(char type, const std::vector<std::string>& block, std::unorde
             consolidated[pk] = {'D', dt, val, ts};
         }
     }
-}
-
-int main() {
-    std::unordered_map<uint64_t, Change> consolidated;
-    std::vector<std::string> current_block;
-    char current_type = 0;  // 0: none, 'I': INSERT, 'U': UPDATE, 'D': DELETE
-
-    std::string line;
-    while (std::getline(std::cin, line)) {
-        std::string tline = trim(line);
-        if (tline.empty()) continue;
-
-        // Detect statement type and start new block
-        if (tline.find("INSERT INTO `enexory`.`api_data_timeseries`") == 0) {
-            // Process previous block if any
-            if (!current_block.empty() && current_type != 0) {
-                process_block(current_type, current_block, consolidated);
-                current_block.clear();
-            }
-            current_type = 'I';
-        } else if (tline.find("UPDATE `enexory`.`api_data_timeseries`") == 0) {
-            if (!current_block.empty() && current_type != 0) {
-                process_block(current_type, current_block, consolidated);
-                current_block.clear();
-            }
-            current_type = 'U';
-        } else if (tline.find("DELETE FROM `enexory`.`api_data_timeseries`") == 0) {
-            if (!current_block.empty() && current_type != 0) {
-                process_block(current_type, current_block, consolidated);
-                current_block.clear();
-            }
-            current_type = 'D';
-        }
-
-        // Add line to current block (only if part of a statement)
-        if (current_type != 0) {
-            current_block.push_back(line);  // Store original for accurate parsing
-        }
-    }
-
-    // Process the last block
-    if (!current_block.empty() && current_type != 0) {
-        process_block(current_type, current_block, consolidated);
-    }
-
-    // Output consolidated changes as CSV (single line per entry)
-    for (const auto& p : consolidated) {
-        uint64_t pk = p.first;
-        const Change& change = p.second;
-        std::cout << pk << ",";
-        std::cout << "'" << change.dt << "',";  // dt always non-null, quoted
-        if (change.val == "NULL") {
-            std::cout << "NULL";
-        } else {
-            std::cout << change.val;
-        }
-        std::cout << "," << change.ts << "," << change.type << std::endl;
-    }
-
-    return 0;
 }
