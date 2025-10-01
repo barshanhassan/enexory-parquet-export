@@ -2,7 +2,7 @@
 
 # No defaults; all args required
 
-# Example run: ./parse_binlogs.sh --binlog-folder /var/log/mysql --start-datetime '2025-09-29 00:00:00' --stop-datetime '2025-09-30 00:00:00' --output-file filtered_events.sql --compress
+# Example run: ./parse_binlogs.sh --binlog-folder /var/log/mysql --start-datetime '2025-09-29 00:00:00' --stop-datetime '2025-09-30 00:00:00' --output-file events.csv
 
 START_DATETIME=""
 STOP_DATETIME=""

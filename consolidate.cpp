@@ -21,57 +21,6 @@ std::string trim(const std::string& str) {
     return str.substr(first, (last - first + 1));
 }
 
-int main() {
-    std::unordered_map<uint64_t, Change> consolidated;
-    std::vector<std::string> current_block;
-    char current_type = 0;  // 0: none, 'I': INSERT, 'U': UPDATE, 'D': DELETE
-
-    std::string line;
-    while (std::getline(std::cin, line)) {
-        std::string tline = trim(line);
-        if (tline.empty()) continue;
-
-        // Detect statement type and start new block
-        if (tline.find("INSERT INTO `enexory`.`api_data_timeseries`") == 0) {
-            // Process previous block if any
-            if (!current_block.empty() && current_type != 0) {
-                process_block(current_type, current_block, consolidated);
-                current_block.clear();
-            }
-            current_type = 'I';
-        } else if (tline.find("UPDATE `enexory`.`api_data_timeseries`") == 0) {
-            if (!current_block.empty() && current_type != 0) {
-                process_block(current_type, current_block, consolidated);
-                current_block.clear();
-            }
-            current_type = 'U';
-        } else if (tline.find("DELETE FROM `enexory`.`api_data_timeseries`") == 0) {
-            if (!current_block.empty() && current_type != 0) {
-                process_block(current_type, current_block, consolidated);
-                current_block.clear();
-            }
-            current_type = 'D';
-        }
-
-        // Add line to current block (skip if not part of statement body)
-        if (current_type != 0) {
-            current_block.push_back(line);  // Store original for accurate parsing
-        }
-    }
-
-    // Process the last block
-    if (!current_block.empty() && current_type != 0) {
-        process_block(current_type, current_block, consolidated);
-    }
-
-    // Output consolidated changes
-    for (const auto& [pk, change] : consolidated) {
-        std::cout << pk << ", '" << change.dt << "', " << change.val << ", " << change.ts << ", " << change.type << std::endl;
-    }
-
-    return 0;
-}
-
 // Helper to process a single statement block and update consolidated map
 void process_block(char type, const std::vector<std::string>& block, std::unordered_map<uint64_t, Change>& consolidated) {
     std::unordered_map<std::string, std::string> where_vals, set_vals;
@@ -142,4 +91,57 @@ void process_block(char type, const std::vector<std::string>& block, std::unorde
             consolidated[pk] = {'D', dt, val, ts};
         }
     }
+}
+
+int main() {
+    std::unordered_map<uint64_t, Change> consolidated;
+    std::vector<std::string> current_block;
+    char current_type = 0;  // 0: none, 'I': INSERT, 'U': UPDATE, 'D': DELETE
+
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        std::string tline = trim(line);
+        if (tline.empty()) continue;
+
+        // Detect statement type and start new block
+        if (tline.find("INSERT INTO `enexory`.`api_data_timeseries`") == 0) {
+            // Process previous block if any
+            if (!current_block.empty() && current_type != 0) {
+                process_block(current_type, current_block, consolidated);
+                current_block.clear();
+            }
+            current_type = 'I';
+        } else if (tline.find("UPDATE `enexory`.`api_data_timeseries`") == 0) {
+            if (!current_block.empty() && current_type != 0) {
+                process_block(current_type, current_block, consolidated);
+                current_block.clear();
+            }
+            current_type = 'U';
+        } else if (tline.find("DELETE FROM `enexory`.`api_data_timeseries`") == 0) {
+            if (!current_block.empty() && current_type != 0) {
+                process_block(current_type, current_block, consolidated);
+                current_block.clear();
+            }
+            current_type = 'D';
+        }
+
+        // Add line to current block (skip if not part of statement body)
+        if (current_type != 0) {
+            current_block.push_back(line);  // Store original for accurate parsing
+        }
+    }
+
+    // Process the last block
+    if (!current_block.empty() && current_type != 0) {
+        process_block(current_type, current_block, consolidated);
+    }
+
+    // Output consolidated changes
+    for (const auto& p : consolidated) {
+        uint64_t pk = p.first;
+        const Change& change = p.second;
+        std::cout << pk << ", '" << change.dt << "', " << change.val << ", " << change.ts << ", " << change.type << std::endl;
+    }
+
+    return 0;
 }
