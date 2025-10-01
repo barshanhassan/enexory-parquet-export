@@ -3,7 +3,7 @@
 import os
 import subprocess
 import pandas as pd
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, timezone
 import time
 import fastparquet
 from diskcache import Cache
@@ -47,7 +47,7 @@ def run_parse_binlogs(start_ts, end_ts):
 def read_and_group_changes(enex_file):
     """Read .enex CSV and group changes by day using diskcache."""
     changes_by_day = Cache(os.path.join(DISKCACHE_TEMP_FOLDER, "changes_by_day"))
-    utc_plus_2 = datetime.timezone(datetime.timedelta(hours=2)) #ALWAYS CEST, EXTRACTOR IF RAN MUST ALSO BE SAVING IT IN CEST. SEEMS LIKE OUTSIDE SUMMERS A PROBLEM MAY ARISE
+    utc_plus_2 = timezone(timedelta(hours=2)) #ALWAYS CEST, EXTRACTOR IF RAN MUST ALSO BE SAVING IT IN CEST. SEEMS LIKE OUTSIDE SUMMERS A PROBLEM MAY ARISE
     
     # Stream CSV to minimize memory
     with open(enex_file, 'r') as f:
@@ -63,8 +63,8 @@ def read_and_group_changes(enex_file):
             
             if change['type'] in ('I', 'U'):
                 change['data']['value'] = None if row[3] == 'NULL' else float(row[3])
-                change['data']['ts'] = datetime.datetime.utcfromtimestamp(int(row[4])).replace(tzinfo=datetime.timezone.utc).astimezone(utc_plus_2).strftime("%Y-%m-%d %H:%M:%S")
-            
+                change['data']['ts'] = datetime.fromtimestamp(int(row[4]), tz=timezone.utc).astimezone(utc_plus_2).strftime("%Y-%m-%d %H:%M:%S")
+                                                                        
             # Group by day (YYYY-MM-DD)
             day = change['data'][DT_COL][:10]  # Extract YYYY-MM-DD
             bucket = changes_by_day.get(day, [])
