@@ -7,7 +7,7 @@
 #include <arrow/io/api.h>
 #include <arrow/table.h>
 #include <arrow/array.h>
-#include <arrow/builder.h> // Added for builders
+#include <arrow/builder.h>
 #include <parquet/arrow/reader.h>
 #include <parquet/arrow/writer.h>
 #include <date/date.h>
@@ -124,7 +124,6 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
     arrow::MemoryPool* pool = arrow::default_memory_pool();
     std::shared_ptr<arrow::io::ReadableFile> infile;
 
-    // Open the Parquet file
     auto open_result = arrow::io::ReadableFile::Open(file_path, pool);
     if (open_result.ok()) {
         infile = *open_result;
@@ -134,14 +133,13 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
             std::cerr << "Failed to open Parquet reader for " << file_path << ": " << reader_result.status().message() << "\n";
             return;
         }
-        reader = *reader_result;
+        reader = std::move(*reader_result); // Use std::move for unique_ptr
         auto read_status = reader->ReadTable(&table);
         if (!read_status.ok()) {
             std::cerr << "Failed to read table from " << file_path << ": " << read_status.message() << "\n";
             return;
         }
     } else {
-        // Create empty table if file doesn't exist
         std::vector<std::shared_ptr<arrow::Array>> arrays = {
             arrow::MakeArrayOfNull(arrow::uint64(), 0).ValueOrDie(),
             arrow::MakeArrayOfNull(arrow::utf8(), 0).ValueOrDie(),
@@ -210,14 +208,15 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
     arrow::StringBuilder dt_builder, ts_builder;
     arrow::DoubleBuilder value_builder;
     for (size_t i = 0; i < new_ids.size(); ++i) {
-        id_builder.Append(new_ids[i]);
-        dt_builder.Append(new_dts[i]);
-        if (new_values[i]) {
-            value_builder.Append(*new_values[i]);
-        } else {
-            value_builder.AppendNull();
+        auto id_status = id_builder.Append(new_ids[i]);
+        auto dt_status = dt_builder.Append(new_dts[i]);
+        auto value_status = new_values[i] ? value_builder.Append(*new_values[i]) : value_builder.AppendNull();
+        auto ts_status = ts_builder.Append(new_tss[i]);
+        if (!id_status.ok() || !dt_status.ok() || !value_status.ok() || !ts_status.ok()) {
+            std::cerr << "Failed to append to builders: " << id_status.message() << ", " << dt_status.message() << ", "
+                      << value_status.message() << ", " << ts_status.message() << "\n";
+            return;
         }
-        ts_builder.Append(new_tss[i]);
     }
 
     std::shared_ptr<arrow::Array> new_id_array, new_dt_array, new_value_array, new_ts_array;
@@ -254,6 +253,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
 }
 
 int main() {
+    // Start timer
     auto start_time = std::chrono::high_resolution_clock::now();
 
     std::ios::sync_with_stdio(false);
@@ -261,8 +261,8 @@ int main() {
 
     std::unordered_map<std::string, std::vector<Change>> changes_by_day;
     std::unordered_map<std::string, std::vector<DeletedEntry>> deleted_by_day;
-    changes_by_day.reserve(20);
-    deleted_by_day.reserve(20);
+    changes_by_day.reserve(100);
+    deleted_by_day.reserve(100);
 
     char current_type = 0;
     bool in_where = false, in_set = false;
