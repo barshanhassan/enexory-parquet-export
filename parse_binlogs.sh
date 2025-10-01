@@ -8,7 +8,6 @@ START_DATETIME=""
 STOP_DATETIME=""
 BINLOG_FOLDER=""
 OUTPUT_FILE=""
-COMPRESS=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -65,13 +64,9 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             ;;
-        --compress)
-            COMPRESS=true
-            shift
-            ;;
         *)
             echo "Unknown option: $1" >&2
-            echo "Usage: $0 --binlog-folder=/path/to/folder --start-datetime=YYYY-MM-DD HH:MM:SS --stop-datetime=YYYY-MM-DD HH:MM:SS --output-file=filename.sql [--compress]" >&2
+            echo "Usage: $0 --binlog-folder=/path/to/folder --start-datetime=YYYY-MM-DD HH:MM:SS --stop-datetime=YYYY-MM-DD HH:MM:SS --output-file=filename.txt" >&2
             exit 1
             ;;
     esac
@@ -189,50 +184,26 @@ if [[ ${#files[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# Run mysqlbinlog pipeline (conditional on compression)
-if [[ "$COMPRESS" == true ]]; then
-    COMPRESSED_OUTPUT="${OUTPUT_FILE}.gz"
-    mysqlbinlog --verbose --database=enexory \
-      --start-datetime="$START_DATETIME" \
-      --stop-datetime="$STOP_DATETIME" \
-      "${files[@]}" \
-      | awk '
-        /^### (INSERT INTO|UPDATE|DELETE FROM) `enexory`.`api_data_timeseries`/ {
-            in_stmt=1; 
+# Run mysqlbinlog pipeline and pipe to C++ consolidator
+mysqlbinlog --verbose --database=enexory \
+  --start-datetime="$START_DATETIME" \
+  --stop-datetime="$STOP_DATETIME" \
+  "${files[@]}" \
+  | awk '
+    /^### (INSERT INTO|UPDATE|DELETE FROM) `enexory`.`api_data_timeseries`/ {
+        in_stmt=1; 
+        gsub(/^### /,""); 
+        print; 
+        next
+    }
+    in_stmt {
+        if ($0 ~ /^###/) { 
             gsub(/^### /,""); 
-            print; 
-            next
+            print 
+        } else { 
+            in_stmt=0 
         }
-        in_stmt {
-            if ($0 ~ /^###/) { 
-                gsub(/^### /,""); 
-                print 
-            } else { 
-                in_stmt=0 
-            }
-        }
-      ' | gzip -c > "$COMPRESSED_OUTPUT"
-    echo "Output written to $COMPRESSED_OUTPUT"
-else
-    mysqlbinlog --verbose --database=enexory \
-      --start-datetime="$START_DATETIME" \
-      --stop-datetime="$STOP_DATETIME" \
-      "${files[@]}" \
-      | awk '
-        /^### (INSERT INTO|UPDATE|DELETE FROM) `enexory`.`api_data_timeseries`/ {
-            in_stmt=1; 
-            gsub(/^### /,""); 
-            print; 
-            next
-        }
-        in_stmt {
-            if ($0 ~ /^###/) { 
-                gsub(/^### /,""); 
-                print 
-            } else { 
-                in_stmt=0 
-            }
-        }
-      ' > "$OUTPUT_FILE"
-    echo "Output written to $OUTPUT_FILE"
-fi
+    }
+  ' | ./consolidate > "$OUTPUT_FILE"
+
+echo "Consolidated output written to $OUTPUT_FILE"
