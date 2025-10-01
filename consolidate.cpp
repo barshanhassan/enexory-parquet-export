@@ -1,14 +1,16 @@
 #include <iostream>
 #include <unordered_map>
+#include <vector>
 #include <string>
 #include <cstdint>
 #include <cstring>
 
 struct Change {
-    char type;  // 'I', 'U', 'D'
-    std::string dt;  // Keep as string for datetime (quoted in output)
-    std::string val; // String to handle NULL
-    uint64_t ts;     // Numeric for efficiency
+    char type;        // 'I', 'U'
+    char dt[20];      // Fixed-size for 'YYYY-MM-DD HH:MM:SS'
+    double val;       // Numeric for non-NULL, use nan for NULL
+    uint64_t ts;      // Numeric
+    bool val_is_null; // Flag for NULL value
 };
 
 std::string trim(const std::string& str) {
@@ -20,44 +22,59 @@ std::string trim(const std::string& str) {
 }
 
 inline void process_block(char type, uint64_t pk, const std::string& dt, 
-                         const std::string& val_raw, const std::string& ts_raw,
-                         std::unordered_map<uint64_t, Change>& consolidated) {
-    if (pk == 0 || ts_raw.empty()) return; // Skip invalid block
+                         const std::string& val_raw, uint64_t ts,
+                         std::unordered_map<uint64_t, Change>& consolidated,
+                         std::vector<uint64_t>& deleted) {
+    if (pk == 0) return; // Skip invalid block
+    if (type != 'D' && (dt.empty() || ts == 0)) return; // Skip invalid INSERT/UPDATE
 
-    // Validate and convert ts
-    uint64_t ts = 0;
-    for (char c : ts_raw) {
-        if (c < '0' || c > '9') return; // Non-numeric, skip
-        ts = ts * 10 + (c - '0');
-    }
-
-    // Validate val (NULL or valid double)
-    std::string val = "NULL";
-    if (val_raw != "NULL") {
-        bool valid = true;
-        try {
-            double dummy = std::stod(val_raw);
-            val = val_raw;
-        } catch (...) {
-            valid = false;
+    // Handle DELETE
+    if (type == 'D') {
+        auto it = consolidated.find(pk);
+        if (it != consolidated.end()) {
+            if (it->second.type == 'I') {
+                consolidated.erase(pk); // No-op for INSERT
+            } else { // UPDATE
+                consolidated.erase(pk);
+                deleted.push_back(pk);
+            }
+        } else {
+            deleted.push_back(pk);
         }
-        if (!valid) return; // Invalid double, skip
+        return;
     }
 
-    // Consolidation logic
+    // Validate val for INSERT/UPDATE
+    double val = 0.0;
+    bool val_is_null = false;
+    if (val_raw == "NULL") {
+        val_is_null = true;
+    } else {
+        try {
+            val = std::stod(val_raw);
+        } catch (...) {
+            return; // Invalid double, skip
+        }
+    }
+
+    // Build Change for INSERT/UPDATE
+    Change change;
+    change.type = type;
+    change.val = val;
+    change.val_is_null = val_is_null;
+    change.ts = ts;
+    strncpy(change.dt, dt.c_str(), sizeof(change.dt) - 1);
+    change.dt[sizeof(change.dt) - 1] = '\0'; // Ensure null-terminated
+
+    // Consolidation logic for INSERT/UPDATE
     auto it = consolidated.find(pk);
     if (type == 'I') {
-        consolidated[pk] = {'I', dt, val, ts};
+        consolidated[pk] = change;
     } else if (type == 'U') {
         char cur_type = (it != consolidated.end()) ? it->second.type : 'U';
         if (cur_type != 'I') cur_type = 'U';
-        consolidated[pk] = {cur_type, dt, val, ts};
-    } else if (type == 'D') {
-        if (it != consolidated.end() && it->second.type == 'I') {
-            consolidated.erase(pk);
-        } else {
-            consolidated[pk] = {'D', dt, val, ts};
-        }
+        change.type = cur_type;
+        consolidated[pk] = change;
     }
 }
 
@@ -66,10 +83,13 @@ int main() {
     std::cin.tie(nullptr);            // Untie cin/cout for faster input
 
     std::unordered_map<uint64_t, Change> consolidated;
-    char current_type = 0;  // 0: none, 'I': INSERT, 'U': UPDATE, 'D': DELETE
+    std::vector<uint64_t> deleted;
+    consolidated.reserve(1000000); // Pre-allocate for ~1M entries (~53MB)
+    deleted.reserve(1000000);      // Pre-allocate for ~1M deletes (~8MB)
+    char current_type = 0;         // 0: none, 'I': INSERT, 'U': UPDATE, 'D': DELETE
     bool in_where = false, in_set = false;
-    uint64_t pk = 0;
-    std::string dt, val_raw, ts_raw;
+    uint64_t pk = 0, ts = 0;
+    std::string dt, val_raw;
     char output_buffer[512]; // Fixed-size for CSV output
 
     std::string line;
@@ -81,10 +101,9 @@ int main() {
 
         // Detect new statement
         if (tline == "INSERT INTO `enexory`.`api_data_timeseries`") {
-            // Process previous block if complete
             if (current_type != 0 && pk != 0) {
-                process_block(current_type, pk, dt, val_raw, ts_raw, consolidated);
-                pk = 0; dt.clear(); val_raw.clear(); ts_raw.clear();
+                process_block(current_type, pk, dt, val_raw, ts, consolidated, deleted);
+                pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
             current_type = 'I';
             in_where = false;
@@ -92,8 +111,8 @@ int main() {
             continue;
         } else if (tline == "UPDATE `enexory`.`api_data_timeseries`") {
             if (current_type != 0 && pk != 0) {
-                process_block(current_type, pk, dt, val_raw, ts_raw, consolidated);
-                pk = 0; dt.clear(); val_raw.clear(); ts_raw.clear();
+                process_block(current_type, pk, dt, val_raw, ts, consolidated, deleted);
+                pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
             current_type = 'U';
             in_where = false;
@@ -101,8 +120,8 @@ int main() {
             continue;
         } else if (tline == "DELETE FROM `enexory`.`api_data_timeseries`") {
             if (current_type != 0 && pk != 0) {
-                process_block(current_type, pk, dt, val_raw, ts_raw, consolidated);
-                pk = 0; dt.clear(); val_raw.clear(); ts_raw.clear();
+                process_block(current_type, pk, dt, val_raw, ts, consolidated, deleted);
+                pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
             current_type = 'D';
             in_where = false;
@@ -128,32 +147,46 @@ int main() {
             if (col == "@1") {
                 pk = 0;
                 for (char c : val) {
-                    if (c < '0' || c > '9') break; // Non-numeric, skip
+                    if (c < '0' || c > '9') { pk = 0; break; } // Non-numeric, invalidate
                     pk = pk * 10 + (c - '0');
                 }
-            } else if (col == "@3") {
-                dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
-                     val.substr(1, val.size() - 2) : val;
-            } else if (col == "@4") {
-                val_raw = (val == "NULL") ? "NULL" : val;
-            } else if (col == "@6") {
-                ts_raw = val;
+            } else if (current_type != 'D') { // Skip for DELETE
+                if (col == "@3") {
+                    dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
+                         val.substr(1, val.size() - 2) : val;
+                } else if (col == "@4") {
+                    val_raw = (val == "NULL") ? "NULL" : val;
+                } else if (col == "@6") {
+                    ts = 0;
+                    for (char c : val) {
+                        if (c < '0' || c > '9') { ts = 0; break; } // Non-numeric, invalidate
+                        ts = ts * 10 + (c - '0');
+                    }
+                }
             }
         }
     }
 
     // Process final block
     if (current_type != 0 && pk != 0) {
-        process_block(current_type, pk, dt, val_raw, ts_raw, consolidated);
+        process_block(current_type, pk, dt, val_raw, ts, consolidated, deleted);
     }
 
-    // Output consolidated changes as CSV
+    // Output consolidated changes as CSV (type first)
     for (const auto& p : consolidated) {
         uint64_t pk = p.first;
         const Change& change = p.second;
         int len = snprintf(output_buffer, sizeof(output_buffer), 
-                          "%lu,'%s',%s,%lu,%c\n",
-                          pk, change.dt.c_str(), change.val.c_str(), change.ts, change.type);
+                          "%c,%lu,'%s',%s,%lu\n",
+                          change.type, pk, change.dt, 
+                          change.val_is_null ? "NULL" : std::to_string(change.val).c_str(), 
+                          change.ts);
+        std::cout.write(output_buffer, len);
+    }
+    // Output deleted rows (type 'D', pk only)
+    for (uint64_t pk : deleted) {
+        int len = snprintf(output_buffer, sizeof(output_buffer), 
+                          "D,%lu\n", pk);
         std::cout.write(output_buffer, len);
     }
 
