@@ -11,12 +11,54 @@ struct Change {
     uint64_t ts;     // Numeric for efficiency
 };
 
-std::string_view trim(std::string_view sv) {
+std::string trim(const std::string& str) {
     size_t start = 0;
-    while (start < sv.size() && (sv[start] == ' ' || sv[start] == '\t')) ++start;
-    size_t end = sv.size();
-    while (end > start && (sv[end - 1] == ' ' || sv[end - 1] == '\t')) --end;
-    return sv.substr(start, end - start);
+    while (start < str.size() && (str[start] == ' ' || str[start] == '\t')) ++start;
+    size_t end = str.size();
+    while (end > start && (str[end - 1] == ' ' || str[end - 1] == '\t')) --end;
+    return str.substr(start, end - start);
+}
+
+inline void process_block(char type, uint64_t pk, const std::string& dt, 
+                         const std::string& val_raw, const std::string& ts_raw,
+                         std::unordered_map<uint64_t, Change>& consolidated) {
+    if (pk == 0 || ts_raw.empty()) return; // Skip invalid block
+
+    // Validate and convert ts
+    uint64_t ts = 0;
+    for (char c : ts_raw) {
+        if (c < '0' || c > '9') return; // Non-numeric, skip
+        ts = ts * 10 + (c - '0');
+    }
+
+    // Validate val (NULL or valid double)
+    std::string val = "NULL";
+    if (val_raw != "NULL") {
+        bool valid = true;
+        try {
+            double dummy = std::stod(val_raw);
+            val = val_raw;
+        } catch (...) {
+            valid = false;
+        }
+        if (!valid) return; // Invalid double, skip
+    }
+
+    // Consolidation logic
+    auto it = consolidated.find(pk);
+    if (type == 'I') {
+        consolidated[pk] = {'I', dt, val, ts};
+    } else if (type == 'U') {
+        char cur_type = (it != consolidated.end()) ? it->second.type : 'U';
+        if (cur_type != 'I') cur_type = 'U';
+        consolidated[pk] = {cur_type, dt, val, ts};
+    } else if (type == 'D') {
+        if (it != consolidated.end() && it->second.type == 'I') {
+            consolidated.erase(pk);
+        } else {
+            consolidated[pk] = {'D', dt, val, ts};
+        }
+    }
 }
 
 int main() {
@@ -28,13 +70,13 @@ int main() {
     bool in_where = false, in_set = false;
     uint64_t pk = 0;
     std::string dt, val_raw, ts_raw;
-    char output_buffer[512]; // Fixed-size for CSV output (adjust if needed)
+    char output_buffer[512]; // Fixed-size for CSV output
 
     std::string line;
     line.reserve(256); // Pre-allocate to reduce reallocations
 
     while (std::getline(std::cin, line)) {
-        std::string_view tline = trim(line);
+        std::string tline = trim(line);
         if (tline.empty()) continue;
 
         // Detect new statement
@@ -79,9 +121,9 @@ int main() {
         // Parse @n=value lines
         if (current_type != 0 && tline.size() > 3 && tline[0] == '@') {
             size_t eq_pos = tline.find('=');
-            if (eq_pos == std::string_view::npos) continue;
-            std::string_view col = tline.substr(0, eq_pos);
-            std::string_view val = trim(tline.substr(eq_pos + 1));
+            if (eq_pos == std::string::npos) continue;
+            std::string col = tline.substr(0, eq_pos);
+            std::string val = trim(tline.substr(eq_pos + 1));
 
             if (col == "@1") {
                 pk = 0;
@@ -91,11 +133,11 @@ int main() {
                 }
             } else if (col == "@3") {
                 dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
-                     std::string(val.substr(1, val.size() - 2)) : std::string(val);
+                     val.substr(1, val.size() - 2) : val;
             } else if (col == "@4") {
-                val_raw = (val == "NULL") ? "NULL" : std::string(val);
+                val_raw = (val == "NULL") ? "NULL" : val;
             } else if (col == "@6") {
-                ts_raw = std::string(val);
+                ts_raw = val;
             }
         }
     }
@@ -110,52 +152,10 @@ int main() {
         uint64_t pk = p.first;
         const Change& change = p.second;
         int len = snprintf(output_buffer, sizeof(output_buffer), 
-                          "%llu,'%s',%s,%llu,%c\n",
+                          "%lu,'%s',%s,%lu,%c\n",
                           pk, change.dt.c_str(), change.val.c_str(), change.ts, change.type);
         std::cout.write(output_buffer, len);
     }
 
     return 0;
-}
-
-inline void process_block(char type, uint64_t pk, const std::string& dt, 
-                         const std::string& val_raw, const std::string& ts_raw,
-                         std::unordered_map<uint64_t, Change>& consolidated) {
-    if (pk == 0 || ts_raw.empty()) return; // Skip invalid block
-
-    // Validate and convert ts
-    uint64_t ts = 0;
-    for (char c : ts_raw) {
-        if (c < '0' || c > '9') return; // Non-numeric, skip
-        ts = ts * 10 + (c - '0');
-    }
-
-    // Validate val (NULL or valid double)
-    std::string val = "NULL";
-    if (val_raw != "NULL") {
-        bool valid = true;
-        try {
-            double dummy = std::stod(val_raw);
-            val = val_raw;
-        } catch (...) {
-            valid = false;
-        }
-        if (!valid) return; // Invalid double, skip
-    }
-
-    // Consolidation logic
-    auto it = consolidated.find(pk);
-    if (type == 'I') {
-        consolidated[pk] = {'I', dt, val, ts};
-    } else if (type == 'U') {
-        char cur_type = (it != consolidated.end()) ? it->second.type : 'U';
-        if (cur_type != 'I') cur_type = 'U';
-        consolidated[pk] = {cur_type, dt, val, ts};
-    } else if (type == 'D') {
-        if (it != consolidated.end() && it->second.type == 'I') {
-            consolidated.erase(pk);
-        } else {
-            consolidated[pk] = {'D', dt, val, ts};
-        }
-    }
 }
