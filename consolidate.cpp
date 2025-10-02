@@ -17,6 +17,15 @@
 #include <filesystem>
 #include <optional>
 
+#define ARROW_CHECK_OK(status)                                         \
+  do {                                                                 \
+    arrow::Status _s = (status);                                       \
+    if (!_s.ok()) {                                                    \
+      throw std::runtime_error("Arrow operation failed: " + _s.ToString()); \
+    }                                                                  \
+  } while (0)
+
+
 struct Change {
     char dt[20];      // 'YYYY-MM-DD HH:MM:SS' in UTC+2
     double val;       // Numeric for non-NULL, use nan for NULL
@@ -67,7 +76,7 @@ inline void process_block(char type, int64_t pk, const std::string& dt,
     } else {
         try {
             val = std::stod(val_raw);
-        } catch (...) {
+        } catch (const std::exception& e) {
             throw std::runtime_error("Failed to parse value '" + val_raw + "' for pk " + std::to_string(pk) + ". Details: " + e.what());
         }
     }
@@ -172,21 +181,21 @@ void update_parquet_file(const std::string& day, const std::unordered_map<int64_
     arrow::DoubleBuilder value_builder;
 
     for (const auto& pair : in_memory_table) {
-        id_builder.Append(pair.first);
-        dt_builder.Append(pair.second.dt);
-        ts_builder.Append(pair.second.ts);
+        ARROW_CHECK_OK(id_builder.Append(pair.first));
+        ARROW_CHECK_OK(dt_builder.Append(pair.second.dt));
+        ARROW_CHECK_OK(ts_builder.Append(pair.second.ts));
         if (pair.second.value.has_value()) {
-            value_builder.Append(*pair.second.value);
+            ARROW_CHECK_OK(value_builder.Append(*pair.second.value));
         } else {
-            value_builder.AppendNull();
+            ARROW_CHECK_OK(value_builder.AppendNull());
         }
     }
 
     std::shared_ptr<arrow::Array> new_id_array, new_dt_array, new_value_array, new_ts_array;
-    id_builder.Finish(&new_id_array);
-    dt_builder.Finish(&new_dt_array);
-    value_builder.Finish(&new_value_array);
-    ts_builder.Finish(&new_ts_array);
+    ARROW_CHECK_OK(id_builder.Finish(&new_id_array));
+    ARROW_CHECK_OK(dt_builder.Finish(&new_dt_array));
+    ARROW_CHECK_OK(value_builder.Finish(&new_value_array));
+    ARROW_CHECK_OK(ts_builder.Finish(&new_ts_array));
 
     auto new_table = arrow::Table::Make(schema, {new_id_array, new_dt_array, new_value_array, new_ts_array});
 
