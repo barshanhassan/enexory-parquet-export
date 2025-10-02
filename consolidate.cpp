@@ -23,11 +23,11 @@ struct Change {
     double val;       // Numeric for non-NULL, use nan for NULL
     uint64_t ts;      // Unix timestamp
     bool val_is_null; // Flag for NULL value
-    uint64_t pk;      // Primary key
+    int64_t pk;      // Primary key
 };
 
 struct DeletedEntry {
-    uint64_t pk;      // Primary key
+    int64_t pk;      // Primary key
     char dt[20];      // 'YYYY-MM-DD HH:MM:SS' in UTC+2
 };
 
@@ -49,7 +49,7 @@ std::string ts_to_utc2(uint64_t ts) {
     return formatted;
 }
 
-inline void process_block(char type, uint64_t pk, const std::string& dt, 
+inline void process_block(char type, int64_t pk, const std::string& dt, 
                          const std::string& val_raw, uint64_t ts,
                          std::unordered_map<std::string, std::vector<Change>>& changes_by_day,
                          std::unordered_map<std::string, std::vector<DeletedEntry>>& deleted_by_day) {
@@ -120,7 +120,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         return;
     }
 
-    auto id_field = arrow::field("id", arrow::uint64());
+    auto id_field = arrow::field("id", arrow::int64());
     auto dt_field = arrow::field("date_time", arrow::utf8());
     auto value_field = arrow::field("value", arrow::float64(), true);
     auto ts_field = arrow::field("ts", arrow::utf8());
@@ -148,7 +148,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         }
     } else {
         std::vector<std::shared_ptr<arrow::Array>> arrays = {
-            arrow::MakeArrayOfNull(arrow::uint64(), 0).ValueOrDie(),
+            arrow::MakeArrayOfNull(arrow::int64(), 0).ValueOrDie(),
             arrow::MakeArrayOfNull(arrow::utf8(), 0).ValueOrDie(),
             arrow::MakeArrayOfNull(arrow::float64(), 0).ValueOrDie(),
             arrow::MakeArrayOfNull(arrow::utf8(), 0).ValueOrDie()
@@ -156,7 +156,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         table = arrow::Table::Make(schema, arrays);
     }
 
-    std::vector<uint64_t> ids;
+    std::vector<int64_t> ids;
     std::vector<std::string> dts;
     std::vector<std::optional<double>> values;
     std::vector<std::string> tss;
@@ -170,7 +170,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
 
     for (int c = 0; c < num_chunks; ++c) {
         // Get arrays for the current chunk 'c'
-        auto id_array = std::static_pointer_cast<arrow::UInt64Array>(table->column(0)->chunk(c));
+        auto id_array = std::static_pointer_cast<arrow::Int64Array>(table->column(0)->chunk(c));
         auto dt_array = std::static_pointer_cast<arrow::StringArray>(table->column(1)->chunk(c));
         auto value_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(c));
         auto ts_array = std::static_pointer_cast<arrow::StringArray>(table->column(3)->chunk(c));
@@ -184,7 +184,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         }
     }
 
-    std::unordered_set<uint64_t> pks_to_remove;
+    std::unordered_set<int64_t> pks_to_remove;
     pks_to_remove.reserve(deleted.size() + changes.size());
     for (const auto& del : deleted) {
         pks_to_remove.insert(del.pk);
@@ -193,7 +193,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         pks_to_remove.insert(change.pk);
     }
 
-    std::vector<uint64_t> new_ids;
+    std::vector<int64_t> new_ids;
     std::vector<std::string> new_dts;
     std::vector<std::optional<double>> new_values;
     std::vector<std::string> new_tss;
@@ -236,7 +236,7 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         return;
     }
 
-    arrow::UInt64Builder id_builder;
+    arrow::Int64Builder id_builder;
     arrow::StringBuilder dt_builder, ts_builder;
     arrow::DoubleBuilder value_builder;
     for (size_t i = 0; i < new_ids.size(); ++i) {
@@ -300,7 +300,8 @@ int main() {
 
     char current_type = 0;
     bool in_where = false, in_set = false;
-    uint64_t pk = 0, ts = 0;
+    int64_t pk = 0;
+    uint64_t ts = 0;
     std::string dt, val_raw;
     std::string line;
     line.reserve(256);
