@@ -41,8 +41,12 @@ std::string trim(const std::string& str) {
 
 std::string ts_to_utc2(uint64_t ts) {
     auto tp = std::chrono::system_clock::from_time_t(ts);
-    auto offset_tp = tp + std::chrono::hours(2); // Fixed +2 hours
-    return date::format("%F %T", offset_tp);
+    auto offset_tp = tp + std::chrono::hours(2);
+    auto formatted = date::format("%F %T", offset_tp);
+    if (formatted.size() > 19) {
+        formatted = formatted.substr(0, 19);
+    }
+    return formatted;
 }
 
 inline void process_block(char type, uint64_t pk, const std::string& dt, 
@@ -173,12 +177,10 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
 
         // Iterate only up to the length of THIS chunk
         for (int64_t i = 0; i < id_array->length(); ++i) {
-            // --- Your original extraction logic ---
             ids.push_back(id_array->Value(i));
             dts.push_back(dt_array->GetString(i));
             values.push_back(value_array->IsNull(i) ? std::nullopt : std::optional<double>(value_array->Value(i)));
             tss.push_back(ts_array->GetString(i));
-            // --------------------------------------
         }
     }
 
