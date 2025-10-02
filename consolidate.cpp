@@ -382,12 +382,47 @@ int main() {
 
     const std::string base_folder = "/root/data";
     std::filesystem::create_directories(base_folder);
-    for (auto it = changes_by_day.begin(); it != changes_by_day.end(); ) {
-        const std::string& day = it->first;
-        update_parquet_file(day, it->second, deleted_by_day[day], base_folder);
-        it = changes_by_day.erase(it); // Clear memory for changes
-        deleted_by_day.erase(day); // Clear memory for deletions
+
+    std::vector<std::string> days_to_process;
+    days_to_process.reserve(changes_by_day.size() + deleted_by_day.size());
+    for (const auto& pair : changes_by_day) {
+        days_to_process.push_back(pair.first);
     }
+    // Add only the days from the deletes map that are not already in our list
+    for (const auto& pair : deleted_by_day) {
+        if (changes_by_day.find(pair.first) == changes_by_day.end()) {
+            days_to_process.push_back(pair.first);
+        }
+    }
+
+    for (const std::string& day : days_to_process) {
+        // Use static empty vectors as a safe default if a day has no changes or no deletions.
+        const static std::vector<Change> empty_changes;
+        const static std::vector<DeletedEntry> empty_deletes;
+
+        auto changes_it = changes_by_day.find(day);
+        const auto& changes = (changes_it != changes_by_day.end()) 
+                                ? changes_it->second 
+                                : empty_changes;
+
+        auto deleted_it = deleted_by_day.find(day);
+        const auto& deletes = (deleted_it != deleted_by_day.end()) 
+                                ? deleted_it->second 
+                                : empty_deletes;
+
+        update_parquet_file(day, changes, deletes, base_folder);
+
+        // Now that the day is processed, erase its data to free memory.
+        if (changes_it != changes_by_day.end()) {
+            changes_by_day.erase(changes_it);
+        }
+        if (deleted_it != deleted_by_day.end()) {
+            deleted_by_day.erase(deleted_it);
+        }
+    }
+
+    changes_by_day.clear();
+    deleted_by_day.clear();
 
     // End timer and print elapsed time
     auto end_time = std::chrono::high_resolution_clock::now();

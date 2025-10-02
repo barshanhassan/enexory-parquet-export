@@ -21,25 +21,16 @@ def main():
     PARQUET_FOLDER = "/root/data"
     ENV_VAR_CONN_STRING = "MYSQL_CONN_STRING"
 
-    # --- 1. Get Parquet File Information ---
-    try:
-        files = glob.glob(os.path.join(PARQUET_FOLDER, "*.parquet"))
-        if not files:
-            print("No Parquet files found. Exiting.")
-            return
-
-        # Find the latest file based on filename
-        latest_file_path = max(files)
-        latest_date_str = os.path.basename(latest_file_path).replace(".parquet", "")
-        
-        # Efficiently sum rows from all files' metadata
-        parquet_total_rows = sum(fastparquet.ParquetFile(f).count() for f in files)
-
-    except Exception as e:
-        print(f"Error processing Parquet files: {e}")
+    files = glob.glob(os.path.join(PARQUET_FOLDER, "*.parquet"))
+    if not files:
+        print("No Parquet files found. Exiting.")
         return
 
-    # --- 2. Get Database Information ---
+    # Find the latest file based on filename
+    latest_file_path = max(files)
+    latest_date_str = os.path.basename(latest_file_path).replace(".parquet", "")
+
+    # --- 1. Get Database Information ---
     conn = None
     try:
         conn_str = os.getenv(ENV_VAR_CONN_STRING)
@@ -66,6 +57,15 @@ def main():
         if conn and conn.is_connected():
             cursor.close()
             conn.close()
+
+    # --- 2. Get Parquet File Information ---
+    try:
+        # Efficiently sum rows from all files' metadata
+        parquet_total_rows = sum(fastparquet.ParquetFile(f).count() for f in files)
+
+    except Exception as e:
+        print(f"Error processing Parquet files: {e}")
+        return
 
     # --- 3. Compare and Report ---
     match = (db_filtered_rows == parquet_total_rows)
