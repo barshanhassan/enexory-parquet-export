@@ -5,6 +5,7 @@ import fastparquet
 import time
 import glob
 from datetime import timedelta
+import subprocess
 
 ENV_VAR_MYSQL_CONN_STRING = "MYSQL_CONN_STRING"
 MIN_DATE = "2010-01-02 00:00:00"
@@ -145,6 +146,23 @@ def main():
             print("="*50 + "\nNO PARQUET FILES FOUND. PERFORMING ONE-TIME HISTORICAL BACKFILL.\n" + "="*50)
             historical_query = f"""SELECT id, date_time, value, ts FROM `{table}` WHERE `{dt_col}` < %(end_date)s ORDER BY `{dt_col}` ASC"""
             run_historical_extraction(conn, historical_query, {"end_date": MIN_DATE}, CHUNK_SIZE, base_folder)
+
+            print("="*50 + "\nRUNNING HISTORICAL PARQUET REPAIR (AS A PRECAUTION)\n" + "="*50)
+
+            try:
+                result = subprocess.run(
+                    ["python3", "./repair_historical_parquet_files.py"],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                print(result.stdout)
+                if result.stderr:
+                    print(result.stderr)
+                print("="*50 + "\nHISTORICAL PARQUET REPAIR COMPLETE\n" + "="*50)
+            except subprocess.CalledProcessError as e:
+                print(f"Repair script failed: {e.stderr}")
+                raise RuntimeError("Historical Parquet repair failed, stopping extraction")
 
         print("="*50 + "\nPERFORMING INCREMENTAL RUN.\n" + "="*50)
         
