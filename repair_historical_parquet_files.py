@@ -17,7 +17,7 @@ def validate_and_clean_df(df, file_path):
     
     # Expected dtypes
     expected_dtypes = {
-        "id": np.uint64,
+        "id": np.int64,
         "date_time": "string",
         "value": "float64",
         "ts": "string"
@@ -30,7 +30,7 @@ def validate_and_clean_df(df, file_path):
     
     # Convert dtypes to ensure consistency
     cleaned_df = pd.DataFrame({
-        "id": pd.Series(dtype=np.uint64),
+        "id": pd.Series(dtype=np.int64),
         "date_time": pd.Series(dtype="string"),
         "value": pd.Series(dtype="float64"),
         "ts": pd.Series(dtype="string")
@@ -40,14 +40,14 @@ def validate_and_clean_df(df, file_path):
     for idx, row in df.iterrows():
         cleaned_row = {}
         
-        # id: Must be uint64, non-negative
+        # id: Must be int64, non-negative
         try:
-            id_val = np.uint64(row["id"])
+            id_val = np.int64(row["id"])
             if id_val < 0:
                 raise ValueError(f"Row {idx} in {file_path}: Negative id value: {row['id']}")
             cleaned_row["id"] = id_val
         except (ValueError, TypeError, OverflowError) as e:
-            raise ValueError(f"Row {idx} in {file_path}: Invalid uint64 for id: {row['id']} ({str(e)})")
+            raise ValueError(f"Row {idx} in {file_path}: Invalid int64 for id: {row['id']} ({str(e)})")
         
         # date_time: Must be string, 19 chars, valid format
         try:
