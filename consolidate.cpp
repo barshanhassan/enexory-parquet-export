@@ -292,17 +292,29 @@ int main() {
     uint64_t pk = 0, ts = 0;
     std::string dt, val_raw;
     std::string line;
-    line.reserve(1024); // Increased for safety
+    line.reserve(4096); // Increased for larger lines
 
-    const size_t MAX_LINE_LENGTH = 65536; // Max line length to prevent overflow
-    const size_t MAX_FIELD_LENGTH = 1024; // Max length for dt, val_raw
+    const size_t MAX_LINE_LENGTH = 65536; // Max line length
+    const size_t MAX_FIELD_LENGTH = 1024; // Max field length
 
+    size_t line_number = 0;
     while (std::getline(std::cin, line)) {
+        ++line_number;
         if (line.size() > MAX_LINE_LENGTH) {
-            std::cerr << "Warning: Skipping line exceeding " << MAX_LINE_LENGTH << " bytes\n";
+            std::cerr << "Warning: Skipping line " << line_number << " exceeding " << MAX_LINE_LENGTH 
+                      << " bytes: " << line.substr(0, 50) << "...\n";
             continue;
         }
-        std::string tline = trim(line);
+
+        // Avoid trim if line is already too long
+        std::string tline;
+        try {
+            tline = trim(line);
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Skipping line " << line_number << " due to trim error: " 
+                      << e.what() << ": " << line.substr(0, 50) << "...\n";
+            continue;
+        }
         if (tline.empty()) continue;
 
         if (tline == "INSERT INTO `enexory`.`api_data_timeseries`") {
@@ -310,7 +322,8 @@ int main() {
                 if (dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
                     process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
                 } else {
-                    std::cerr << "Warning: Skipping block due to oversized dt or val_raw\n";
+                    std::cerr << "Warning: Skipping block at line " << line_number 
+                              << " due to oversized dt or val_raw\n";
                 }
                 pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
@@ -323,7 +336,8 @@ int main() {
                 if (dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
                     process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
                 } else {
-                    std::cerr << "Warning: Skipping block due to oversized dt or val_raw\n";
+                    std::cerr << "Warning: Skipping block at line " << line_number 
+                              << " due to oversized dt or val_raw\n";
                 }
                 pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
@@ -336,7 +350,8 @@ int main() {
                 if (dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
                     process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
                 } else {
-                    std::cerr << "Warning: Skipping block due to oversized dt or val_raw\n";
+                    std::cerr << "Warning: Skipping block at line " << line_number 
+                              << " due to oversized dt or val_raw\n";
                 }
                 pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
@@ -357,10 +372,26 @@ int main() {
         if (current_type != 0 && tline.size() > 3 && tline[0] == '@') {
             size_t eq_pos = tline.find('=');
             if (eq_pos == std::string::npos) continue;
-            std::string col = tline.substr(0, eq_pos);
-            std::string val = trim(tline.substr(eq_pos + 1));
+            std::string col;
+            try {
+                col = tline.substr(0, eq_pos);
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: Skipping line " << line_number << " due to col substr error: " 
+                          << e.what() << ": " << tline.substr(0, 50) << "...\n";
+                continue;
+            }
+            std::string val;
+            try {
+                val = trim(tline.substr(eq_pos + 1));
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: Skipping line " << line_number << " due to val substr error: " 
+                          << e.what() << ": " << tline.substr(0, 50) << "...\n";
+                continue;
+            }
             if (val.size() > MAX_FIELD_LENGTH) {
-                std::cerr << "Warning: Skipping field " << col << " with value exceeding " << MAX_FIELD_LENGTH << " bytes\n";
+                std::cerr << "Warning: Skipping field " << col << " at line " << line_number 
+                          << " with value exceeding " << MAX_FIELD_LENGTH << " bytes: " 
+                          << val.substr(0, 50) << "...\n";
                 continue;
             }
 
@@ -371,17 +402,31 @@ int main() {
                     pk = pk * 10 + (c - '0');
                 }
             } else if (col == "@3") {
-                dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
-                     val.substr(1, val.size() - 2) : val;
-                if (dt.size() > MAX_FIELD_LENGTH) {
-                    std::cerr << "Warning: Skipping oversized dt field: " << dt.substr(0, 50) << "...\n";
+                try {
+                    dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
+                         val.substr(1, val.size() - 2) : val;
+                    if (dt.size() > MAX_FIELD_LENGTH) {
+                        std::cerr << "Warning: Skipping oversized dt field at line " << line_number 
+                                  << ": " << dt.substr(0, 50) << "...\n";
+                        dt.clear();
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "Warning: Skipping dt field at line " << line_number 
+                              << " due to substr error: " << e.what() << ": " << val.substr(0, 50) << "...\n";
                     dt.clear();
                 }
             } else if (current_type != 'D') {
                 if (col == "@4") {
-                    val_raw = (val == "NULL") ? "NULL" : val;
-                    if (val_raw.size() > MAX_FIELD_LENGTH) {
-                        std::cerr << "Warning: Skipping oversized val_raw field: " << val_raw.substr(0, 50) << "...\n";
+                    try {
+                        val_raw = (val == "NULL") ? "NULL" : val;
+                        if (val_raw.size() > MAX_FIELD_LENGTH) {
+                            std::cerr << "Warning: Skipping oversized val_raw field at line " << line_number 
+                                      << ": " << val_raw.substr(0, 50) << "...\n";
+                            val_raw.clear();
+                        }
+                    } catch (const std::exception& e) {
+                        std::cerr << "Warning: Skipping val_raw field at line " << line_number 
+                                  << " due to error: " << e.what() << ": " << val.substr(0, 50) << "...\n";
                         val_raw.clear();
                     }
                 } else if (col == "@6") {
