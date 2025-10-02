@@ -1,5 +1,6 @@
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <chrono>
 #include <thread>
 #include <filesystem>
+#include <optional>
 
 struct Change {
     char type;        // 'I', 'U'
@@ -150,10 +152,9 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         table = arrow::Table::Make(schema, arrays);
     }
 
-    auto id_array = std::static_pointer_cast<arrow::UInt64Array>(table->column(0)->chunk(0));
-    auto dt_array = std::static_pointer_cast<arrow::StringArray>(table->column(1)->chunk(0));
-    auto value_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(0));
-    auto ts_array = std::static_pointer_cast<arrow::StringArray>(table->column(3)->chunk(0));
+    // ================= START MINIMAL FIX =================
+    // Old code defined arrays as ->chunk(0) here.
+    // We move that inside a loop over all chunks.
 
     std::vector<uint64_t> ids;
     std::vector<std::string> dts;
@@ -164,21 +165,27 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
     values.reserve(table->num_rows());
     tss.reserve(table->num_rows());
 
-    const size_t MAX_DT_LENGTH = 19;
-    for (int64_t i = 0; i < table->num_rows(); ++i) {
-        ids.push_back(id_array->Value(i));
-        std::string dt_str;
-        std::string_view dt_view = dt_array->GetView(i);
-        dt_str = dt_view.substr(0, std::min(dt_view.size(), MAX_DT_LENGTH));
-        if (dt_view.size() > MAX_DT_LENGTH) {
-            std::cerr << "Warning: Truncated date_time from " << dt_view.size() << " to " 
-                        << MAX_DT_LENGTH << " chars in Parquet file (" << file_path << ") at row " << i << ": " 
-                        << dt_str << "\n";
+    // Iterate over chunks, then rows within that chunk.
+    int num_chunks = table->num_rows() > 0 ? table->column(0)->num_chunks() : 0;
+
+    for (int c = 0; c < num_chunks; ++c) {
+        // Get arrays for the current chunk 'c'
+        auto id_array = std::static_pointer_cast<arrow::UInt64Array>(table->column(0)->chunk(c));
+        auto dt_array = std::static_pointer_cast<arrow::StringArray>(table->column(1)->chunk(c));
+        auto value_array = std::static_pointer_cast<arrow::DoubleArray>(table->column(2)->chunk(c));
+        auto ts_array = std::static_pointer_cast<arrow::StringArray>(table->column(3)->chunk(c));
+
+        // Iterate only up to the length of THIS chunk
+        for (int64_t i = 0; i < id_array->length(); ++i) {
+            // --- Your original extraction logic ---
+            ids.push_back(id_array->Value(i));
+            dts.push_back(dt_array->GetString(i));
+            values.push_back(value_array->IsNull(i) ? std::nullopt : std::optional<double>(value_array->Value(i)));
+            tss.push_back(ts_array->GetString(i));
+            // --------------------------------------
         }
-        dts.push_back(dt_str);
-        values.push_back(value_array->IsNull(i) ? std::nullopt : std::optional<double>(value_array->Value(i)));
-        tss.push_back(ts_array->GetString(i));
     }
+    // ================= END MINIMAL FIX =================
 
     std::unordered_set<uint64_t> pks_to_remove;
     pks_to_remove.reserve(deleted.size() + changes.size());
