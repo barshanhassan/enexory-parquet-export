@@ -167,26 +167,35 @@ if [[ ${#files[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# Run mysqlbinlog pipeline and pipe directly to C++ consolidator
-mysqlbinlog --verbose \
-  --start-datetime="$START_DATETIME" \
-  --stop-datetime="$STOP_DATETIME" \
-  "${files[@]}" \
-  | awk '
-    /^### (INSERT INTO|UPDATE|DELETE FROM) `enexory`.`api_data_timeseries`/ {
-        in_stmt=1; 
-        gsub(/^### /,""); 
-        print; 
-        next
-    }
-    in_stmt {
-        if ($0 ~ /^###/) { 
-            gsub(/^### /,""); 
-            print 
-        } else { 
-            in_stmt=0 
+# Process files one at a time with progress
+total_files=${#files[@]}
+current_file=0
+for file in "${files[@]}"; do
+    ((current_file++))
+    echo "Processing file $current_file/$total_files: $file" >&2
+    mysqlbinlog --verbose \
+      --start-datetime="$START_DATETIME" \
+      --stop-datetime="$STOP_DATETIME" \
+      "$file" \
+      | awk '
+        /^### (INSERT INTO|UPDATE|DELETE FROM) `enexory`.`api_data_timeseries`/ {
+            in_stmt=1;
+            gsub(/^### /,"");
+            print;
+            next
         }
+        in_stmt {
+            if ($0 ~ /^###/) {
+                gsub(/^### /,"");
+                print
+            } else {
+                in_stmt=0
+            }
+        }
+      ' | ./consolidate || {
+        echo "Error: Failed processing $file" >&2
+        exit 1
     }
-  ' | ./consolidate
+done
 
 echo "Sync fully complete."
