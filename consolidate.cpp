@@ -164,9 +164,18 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
     values.reserve(table->num_rows());
     tss.reserve(table->num_rows());
 
+    const size_t MAX_DT_LENGTH = 19;
     for (int64_t i = 0; i < table->num_rows(); ++i) {
         ids.push_back(id_array->Value(i));
-        dts.push_back(dt_array->GetString(i));
+        std::string dt_str;
+        std::string_view dt_view = dt_array->GetView(i);
+        dt_str = dt_view.substr(0, std::min(dt_view.size(), MAX_DT_LENGTH));
+        if (dt_view.size() > MAX_DT_LENGTH) {
+            std::cerr << "Warning: Truncated date_time from " << dt_view.size() << " to " 
+                        << MAX_DT_LENGTH << " chars in Parquet file (" << file_path << ") at row " << i << ": " 
+                        << dt_str << "\n";
+        }
+        dts.push_back(dt_str);
         values.push_back(value_array->IsNull(i) ? std::nullopt : std::optional<double>(value_array->Value(i)));
         tss.push_back(ts_array->GetString(i));
     }
