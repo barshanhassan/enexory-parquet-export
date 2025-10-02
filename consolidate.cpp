@@ -51,6 +51,7 @@ inline void process_block(char type, uint64_t pk, const std::string& dt,
     if (type != 'D' && (dt.empty() || ts == 0)) return;
 
     std::string day = dt.substr(0, 10);
+    if (day.size() != 10) return; // Ensure valid date format
 
     if (type == 'D') {
         auto& changes = changes_by_day[day];
@@ -80,6 +81,7 @@ inline void process_block(char type, uint64_t pk, const std::string& dt,
         try {
             val = std::stod(val_raw);
         } catch (...) {
+            std::cerr << "Warning: Skipping invalid val_raw: " << val_raw.substr(0, 50) << "...\n";
             return;
         }
     }
@@ -290,15 +292,26 @@ int main() {
     uint64_t pk = 0, ts = 0;
     std::string dt, val_raw;
     std::string line;
-    line.reserve(256);
+    line.reserve(1024); // Increased for safety
+
+    const size_t MAX_LINE_LENGTH = 65536; // Max line length to prevent overflow
+    const size_t MAX_FIELD_LENGTH = 1024; // Max length for dt, val_raw
 
     while (std::getline(std::cin, line)) {
+        if (line.size() > MAX_LINE_LENGTH) {
+            std::cerr << "Warning: Skipping line exceeding " << MAX_LINE_LENGTH << " bytes\n";
+            continue;
+        }
         std::string tline = trim(line);
         if (tline.empty()) continue;
 
         if (tline == "INSERT INTO `enexory`.`api_data_timeseries`") {
             if (current_type != 0 && pk != 0) {
-                process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+                if (dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
+                    process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+                } else {
+                    std::cerr << "Warning: Skipping block due to oversized dt or val_raw\n";
+                }
                 pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
             current_type = 'I';
@@ -307,7 +320,11 @@ int main() {
             continue;
         } else if (tline == "UPDATE `enexory`.`api_data_timeseries`") {
             if (current_type != 0 && pk != 0) {
-                process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+                if (dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
+                    process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+                } else {
+                    std::cerr << "Warning: Skipping block due to oversized dt or val_raw\n";
+                }
                 pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
             current_type = 'U';
@@ -316,7 +333,11 @@ int main() {
             continue;
         } else if (tline == "DELETE FROM `enexory`.`api_data_timeseries`") {
             if (current_type != 0 && pk != 0) {
-                process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+                if (dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
+                    process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+                } else {
+                    std::cerr << "Warning: Skipping block due to oversized dt or val_raw\n";
+                }
                 pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
             current_type = 'D';
@@ -338,6 +359,10 @@ int main() {
             if (eq_pos == std::string::npos) continue;
             std::string col = tline.substr(0, eq_pos);
             std::string val = trim(tline.substr(eq_pos + 1));
+            if (val.size() > MAX_FIELD_LENGTH) {
+                std::cerr << "Warning: Skipping field " << col << " with value exceeding " << MAX_FIELD_LENGTH << " bytes\n";
+                continue;
+            }
 
             if (col == "@1") {
                 pk = 0;
@@ -348,9 +373,17 @@ int main() {
             } else if (col == "@3") {
                 dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
                      val.substr(1, val.size() - 2) : val;
+                if (dt.size() > MAX_FIELD_LENGTH) {
+                    std::cerr << "Warning: Skipping oversized dt field: " << dt.substr(0, 50) << "...\n";
+                    dt.clear();
+                }
             } else if (current_type != 'D') {
                 if (col == "@4") {
                     val_raw = (val == "NULL") ? "NULL" : val;
+                    if (val_raw.size() > MAX_FIELD_LENGTH) {
+                        std::cerr << "Warning: Skipping oversized val_raw field: " << val_raw.substr(0, 50) << "...\n";
+                        val_raw.clear();
+                    }
                 } else if (col == "@6") {
                     ts = 0;
                     for (char c : val) {
@@ -362,8 +395,10 @@ int main() {
         }
     }
 
-    if (current_type != 0 && pk != 0) {
+    if (current_type != 0 && pk != 0 && dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
         process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+    } else if (current_type != 0 && pk != 0) {
+        std::cerr << "Warning: Skipping final block due to oversized dt or val_raw\n";
     }
 
     const std::string base_folder = "/root/data";
