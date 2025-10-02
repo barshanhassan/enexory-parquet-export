@@ -51,7 +51,6 @@ inline void process_block(char type, uint64_t pk, const std::string& dt,
     if (type != 'D' && (dt.empty() || ts == 0)) return;
 
     std::string day = dt.substr(0, 10);
-    if (day.size() != 10) return; // Ensure valid date format
 
     if (type == 'D') {
         auto& changes = changes_by_day[day];
@@ -81,7 +80,6 @@ inline void process_block(char type, uint64_t pk, const std::string& dt,
         try {
             val = std::stod(val_raw);
         } catch (...) {
-            std::cerr << "Warning: Skipping invalid val_raw: " << val_raw.substr(0, 50) << "...\n";
             return;
         }
     }
@@ -275,62 +273,6 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
               << deleted.size() << " deletions. New row count: " << new_table->num_rows() << "\n";
 }
 
-bool read_line(std::istream& in, std::string& output, size_t max_length, size_t& line_number) {
-    output.clear();
-    const size_t BUFFER_SIZE = 4096;
-    char buffer[BUFFER_SIZE];
-    size_t total_read = 0;
-    bool found_newline = false;
-
-    while (in && total_read < max_length) {
-        size_t remaining = max_length - total_read;
-        size_t read_size = std::min(BUFFER_SIZE - 1, remaining);
-        in.getline(buffer, read_size, '\n');
-        size_t chars_read = in.gcount();
-        
-        if (chars_read == 0 && in.eof()) {
-            break;
-        }
-
-        if (in.fail() && !in.eof()) {
-            // Clear fail state if line was too long but not EOF
-            in.clear();
-            buffer[read_size - 1] = '\0';
-            output.append(buffer);
-            total_read += chars_read - 1;
-            // Read and discard until newline or EOF
-            char c;
-            while (in.get(c) && c != '\n');
-            found_newline = true;
-            break;
-        }
-
-        buffer[chars_read > 0 ? chars_read - 1 : 0] = '\0';
-        output.append(buffer);
-        total_read += chars_read;
-
-        if (in.eof() || in.gcount() <= read_size - 1) {
-            found_newline = true;
-            break;
-        }
-    }
-
-    if (total_read >= max_length) {
-        std::cerr << "Warning: Skipping line " << line_number << " exceeding " << max_length 
-                  << " bytes: " << output.substr(0, std::min(output.size(), size_t(50))) << "...\n";
-        // Discard rest of line
-        char c;
-        while (in.get(c) && c != '\n');
-        return false;
-    }
-
-    if (output.empty() && in.eof()) {
-        return false;
-    }
-
-    return true;
-}
-
 int main() {
     // Start timer
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -348,35 +290,15 @@ int main() {
     uint64_t pk = 0, ts = 0;
     std::string dt, val_raw;
     std::string line;
+    line.reserve(256);
 
-    const size_t MAX_LINE_LENGTH = 65536; // Max line length
-    const size_t MAX_FIELD_LENGTH = 1024; // Max field length
-
-    size_t line_number = 0;
-    while (read_line(std::cin, line, MAX_LINE_LENGTH, ++line_number)) {
-        // Inline trim
-        size_t start = 0;
-        while (start < line.size() && (line[start] == ' ' || line[start] == '\t')) ++start;
-        size_t end = line.size();
-        while (end > start && (line[end - 1] == ' ' || line[end - 1] == '\t')) --end;
-        std::string tline;
-        try {
-            tline = line.substr(start, end - start);
-        } catch (const std::exception& e) {
-            std::cerr << "Warning: Skipping line " << line_number << " due to substr error: " 
-                      << e.what() << ": " << line.substr(0, std::min(line.size(), size_t(50))) << "...\n";
-            continue;
-        }
+    while (std::getline(std::cin, line)) {
+        std::string tline = trim(line);
         if (tline.empty()) continue;
 
         if (tline == "INSERT INTO `enexory`.`api_data_timeseries`") {
             if (current_type != 0 && pk != 0) {
-                if (dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
-                    process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
-                } else {
-                    std::cerr << "Warning: Skipping block at line " << line_number 
-                              << " due to oversized dt or val_raw\n";
-                }
+                process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
                 pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
             current_type = 'I';
@@ -385,12 +307,7 @@ int main() {
             continue;
         } else if (tline == "UPDATE `enexory`.`api_data_timeseries`") {
             if (current_type != 0 && pk != 0) {
-                if (dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
-                    process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
-                } else {
-                    std::cerr << "Warning: Skipping block at line " << line_number 
-                              << " due to oversized dt or val_raw\n";
-                }
+                process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
                 pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
             current_type = 'U';
@@ -399,12 +316,7 @@ int main() {
             continue;
         } else if (tline == "DELETE FROM `enexory`.`api_data_timeseries`") {
             if (current_type != 0 && pk != 0) {
-                if (dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
-                    process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
-                } else {
-                    std::cerr << "Warning: Skipping block at line " << line_number 
-                              << " due to oversized dt or val_raw\n";
-                }
+                process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
                 pk = 0; ts = 0; dt.clear(); val_raw.clear();
             }
             current_type = 'D';
@@ -424,32 +336,8 @@ int main() {
         if (current_type != 0 && tline.size() > 3 && tline[0] == '@') {
             size_t eq_pos = tline.find('=');
             if (eq_pos == std::string::npos) continue;
-            std::string col;
-            try {
-                col = tline.substr(0, eq_pos);
-            } catch (const std::exception& e) {
-                std::cerr << "Warning: Skipping line " << line_number << " due to col substr error: " 
-                          << e.what() << ": " << tline.substr(0, std::min(tline.size(), size_t(50))) << "...\n";
-                continue;
-            }
-            std::string val;
-            try {
-                size_t val_start = eq_pos + 1;
-                while (val_start < tline.size() && (tline[val_start] == ' ' || tline[val_start] == '\t')) ++val_start;
-                size_t val_end = tline.size();
-                while (val_end > val_start && (tline[val_end - 1] == ' ' || tline[val_end - 1] == '\t')) --val_end;
-                val = tline.substr(val_start, val_end - val_start);
-            } catch (const std::exception& e) {
-                std::cerr << "Warning: Skipping line " << line_number << " due to val substr error: " 
-                          << e.what() << ": " << tline.substr(0, std::min(tline.size(), size_t(50))) << "...\n";
-                continue;
-            }
-            if (val.size() > MAX_FIELD_LENGTH) {
-                std::cerr << "Warning: Skipping field " << col << " at line " << line_number 
-                          << " with value exceeding " << MAX_FIELD_LENGTH << " bytes: " 
-                          << val.substr(0, std::min(val.size(), size_t(50))) << "...\n";
-                continue;
-            }
+            std::string col = tline.substr(0, eq_pos);
+            std::string val = trim(tline.substr(eq_pos + 1));
 
             if (col == "@1") {
                 pk = 0;
@@ -458,33 +346,11 @@ int main() {
                     pk = pk * 10 + (c - '0');
                 }
             } else if (col == "@3") {
-                try {
-                    dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
-                         val.substr(1, val.size() - 2) : val;
-                    if (dt.size() > MAX_FIELD_LENGTH) {
-                        std::cerr << "Warning: Skipping oversized dt field at line " << line_number 
-                                  << ": " << dt.substr(0, std::min(dt.size(), size_t(50))) << "...\n";
-                        dt.clear();
-                    }
-                } catch (const std::exception& e) {
-                    std::cerr << "Warning: Skipping dt field at line " << line_number 
-                              << " due to substr error: " << e.what() << ": " << val.substr(0, std::min(val.size(), size_t(50))) << "...\n";
-                    dt.clear();
-                }
+                dt = (val.size() > 2 && val.front() == '\'' && val.back() == '\'') ? 
+                     val.substr(1, val.size() - 2) : val;
             } else if (current_type != 'D') {
                 if (col == "@4") {
-                    try {
-                        val_raw = (val == "NULL") ? "NULL" : val;
-                        if (val_raw.size() > MAX_FIELD_LENGTH) {
-                            std::cerr << "Warning: Skipping oversized val_raw field at line " << line_number 
-                                      << ": " << val_raw.substr(0, std::min(val_raw.size(), size_t(50))) << "...\n";
-                            val_raw.clear();
-                        }
-                    } catch (const std::exception& e) {
-                        std::cerr << "Warning: Skipping val_raw field at line " << line_number 
-                                  << " due to error: " << e.what() << ": " << val.substr(0, std::min(val.size(), size_t(50))) << "...\n";
-                        val_raw.clear();
-                    }
+                    val_raw = (val == "NULL") ? "NULL" : val;
                 } else if (col == "@6") {
                     ts = 0;
                     for (char c : val) {
@@ -496,10 +362,8 @@ int main() {
         }
     }
 
-    if (current_type != 0 && pk != 0 && dt.size() <= MAX_FIELD_LENGTH && val_raw.size() <= MAX_FIELD_LENGTH) {
+    if (current_type != 0 && pk != 0) {
         process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
-    } else if (current_type != 0 && pk != 0) {
-        std::cerr << "Warning: Skipping final block due to oversized dt or val_raw\n";
     }
 
     const std::string base_folder = "/root/data";
