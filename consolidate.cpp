@@ -152,10 +152,6 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
         table = arrow::Table::Make(schema, arrays);
     }
 
-    // ================= START MINIMAL FIX =================
-    // Old code defined arrays as ->chunk(0) here.
-    // We move that inside a loop over all chunks.
-
     std::vector<uint64_t> ids;
     std::vector<std::string> dts;
     std::vector<std::optional<double>> values;
@@ -185,7 +181,6 @@ void update_parquet_file(const std::string& day, const std::vector<Change>& chan
             // --------------------------------------
         }
     }
-    // ================= END MINIMAL FIX =================
 
     std::unordered_set<uint64_t> pks_to_remove;
     pks_to_remove.reserve(deleted.size() + changes.size());
