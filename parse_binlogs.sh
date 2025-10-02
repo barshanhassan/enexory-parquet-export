@@ -5,6 +5,20 @@
 BINLOG_FOLDER=""
 DAYS_BACK=""
 
+RSYNC_SOURCE_DIR="/root/data/"
+RSYNC_DEST_HOST="root@195.201.204.21"
+RSYNC_DEST_DIR="/root/data/"
+RSYNC_SSH_KEY="/root/.ssh/backup_parquet"
+
+LOG_DIR="/root/parquet_sync_logs"
+
+mkdir -p "$LOG_DIR" || { echo "CRITICAL: Could not create log directory '$LOG_DIR'. Exiting." >&2; exit 1; }
+LOG_FILE="${LOG_DIR}/$(date +'%Y-%m-%d_%H-%M-%S').log"
+
+echo "Logging all output to: ${LOG_FILE}"
+
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -173,11 +187,6 @@ if [[ ${#files[@]} -eq 0 ]]; then
     exit 1
 fi
 
-if [[ ${#files[@]} -eq 0 ]]; then
-    echo "Error: No valid files in range" >&2
-    exit 1
-fi
-
 # Process files one at a time with progress
 total_files=${#files[@]}
 current_file=0
@@ -209,4 +218,11 @@ for file in "${files[@]}"; do
     }
 done
 
-echo "Sync fully complete."
+echo "Binlog processing complete. Starting rsync to destination..."
+
+rsync -avz --checksum --delete -e "ssh -i ${RSYNC_SSH_KEY}" "${RSYNC_SOURCE_DIR}" "${RSYNC_DEST_HOST}:${RSYNC_DEST_DIR}" || {
+    echo "Error: rsync failed to sync data to the destination." >&2
+    exit 1
+}
+
+echo "Binlog processing and rsync to destination complete."
