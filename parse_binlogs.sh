@@ -92,21 +92,32 @@ get_ts() {
 }
 
 # Find latest file <= ts (last in ordered list with mtime <= ts)
+# If none are found, find the earliest file with mtime >= start_ts and mtime <= stop_ts
 get_start_file() {
-    local ts="$1"
+    local start_ts="$1"
+    local stop_ts="$2"
     local last_leq=""
+    local earliest_in_range=""
     while IFS= read -r file; do
         [[ -f "$file" ]] || continue  # Skip if file missing
         local mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
-        if (( mtime <= ts )); then
+        if (( mtime <= start_ts )); then
             last_leq="$file"
+        elif (( mtime >= start_ts && mtime <= stop_ts )); then
+            if [[ -z "$earliest_in_range" ]]; then
+                earliest_in_range="$file"
+            fi
         fi
     done < <(parse_index "$BINLOG_INDEX")
-    [[ -n "$last_leq" ]] || {
-        echo "Error: No binlog <= $START_DATETIME" >&2
+    if [[ -n "$last_leq" ]]; then
+        echo "$last_leq"
+    elif [[ -n "$earliest_in_range" ]]; then
+        echo "Warning: No binlog <= $START_DATETIME, using earliest in range: $earliest_in_range" >&2
+        echo "$earliest_in_range"
+    else
+        echo "Error: No binlog files in range $START_DATETIME to $STOP_DATETIME" >&2
         exit 1
-    }
-    echo "$last_leq"
+    fi
 }
 
 # Find earliest file > ts (first in ordered list with mtime > ts), fallback to last
@@ -137,7 +148,7 @@ get_end_file() {
 start_ts=$(get_ts "$START_DATETIME")
 stop_ts=$(get_ts "$STOP_DATETIME")
 
-start_file=$(get_start_file "$start_ts")
+start_file=$(get_start_file "$start_ts" "$stop_ts")
 end_file=$(get_end_file "$stop_ts")
 
 # Extract just the number (e.g., 237 from mysql-bin.000237)
