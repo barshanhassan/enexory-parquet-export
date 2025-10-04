@@ -52,9 +52,11 @@ std::string ts_to_utc2(uint64_t ts) {
     return formatted;
 }
 
+// MODIFICATION: Function signature updated to handle separate insert/update maps.
 inline void process_block(char type, int64_t pk, const std::string& dt, 
                          const std::string& val_raw, uint64_t ts,
-                         std::unordered_map<std::string, std::unordered_map<int64_t, Change>>& changes_by_day,
+                         std::unordered_map<std::string, std::unordered_map<int64_t, Change>>& inserts_by_day,
+                         std::unordered_map<std::string, std::unordered_map<int64_t, Change>>& updates_by_day,
                          std::unordered_map<std::string, std::unordered_set<int64_t>>& deleted_by_day) {
     if (pk == 0) throw std::runtime_error("Invalid event: Primary Key (pk) is 0.");
     if (dt.empty()) throw std::runtime_error("Invalid event: Date/Time (dt) is empty for pk " + std::to_string(pk));
@@ -63,8 +65,10 @@ inline void process_block(char type, int64_t pk, const std::string& dt,
 
     std::string day = dt.substr(0, 10);
 
+    // MODIFICATION: Delete logic now cleans up from both insert and update maps.
     if (type == 'D') {
-        changes_by_day[day].erase(pk);
+        inserts_by_day[day].erase(pk);
+        updates_by_day[day].erase(pk);
         deleted_by_day[day].insert(pk);
         return;
     }
@@ -89,14 +93,30 @@ inline void process_block(char type, int64_t pk, const std::string& dt,
     strncpy(change.dt, dt.c_str(), sizeof(change.dt) - 1);
     change.dt[sizeof(change.dt) - 1] = '\0';
 
-    changes_by_day[day][pk] = change;
+    // MODIFICATION: New stateful logic to separate inserts from updates.
+    if (type == 'I') {
+        inserts_by_day[day][pk] = change;
+    } else if (type == 'U') {
+        // Check if this PK was already inserted in this batch.
+        if (inserts_by_day[day].count(pk) > 0) {
+            // If so, update the entry in the inserts map.
+            inserts_by_day[day][pk] = change;
+        } else {
+            // Otherwise, it's an update to a pre-existing row.
+            updates_by_day[day][pk] = change;
+        }
+    }
 }
 
-void update_parquet_file(const std::string& day, const std::unordered_map<int64_t, Change>& upserts, 
-                        const std::unordered_set<int64_t>& deletes, const std::string& base_folder) {
+// MODIFICATION: Function signature updated for separate insert/update maps.
+void update_parquet_file(const std::string& day, 
+                        const std::unordered_map<int64_t, Change>& inserts,
+                        const std::unordered_map<int64_t, Change>& updates, 
+                        const std::unordered_set<int64_t>& deletes, 
+                        const std::string& base_folder) {
     std::string file_path = base_folder + "/" + day + ".parquet";
 
-    if (upserts.empty() && deletes.empty()) return;
+    if (inserts.empty() && updates.empty() && deletes.empty()) return;
 
     auto id_field = arrow::field("id", arrow::int64());
     auto dt_field = arrow::field("date_time", arrow::utf8());
@@ -149,7 +169,29 @@ void update_parquet_file(const std::string& day, const std::unordered_map<int64_
         }
     }
 
-    for (const auto& pair : upserts) {
+    // MODIFICATION: New, ordered logic for applying changes.
+
+    // 1. Apply Deletes first.
+    for (const auto& pk_to_delete : deletes) {
+        in_memory_table.erase(pk_to_delete);
+    }
+
+    // 2. Apply Updates (but only if the key already exists).
+    for (const auto& pair : updates) {
+        const int64_t& pk = pair.first;
+        const Change& change = pair.second;
+        // This is the crucial check for the new logic.
+        if (in_memory_table.count(pk) > 0) {
+            in_memory_table[pk] = {
+                std::string(change.dt),
+                change.val_is_null ? std::nullopt : std::optional<double>(change.val),
+                ts_to_utc2(change.ts)
+            };
+        }
+    }
+    
+    // 3. Apply Inserts last (these are effectively upserts, which is correct for new rows).
+    for (const auto& pair : inserts) {
         const int64_t& pk = pair.first;
         const Change& change = pair.second;
         in_memory_table[pk] = {
@@ -157,10 +199,6 @@ void update_parquet_file(const std::string& day, const std::unordered_map<int64_
             change.val_is_null ? std::nullopt : std::optional<double>(change.val),
             ts_to_utc2(change.ts)
         };
-    }
-
-    for (const auto& pk_to_delete : deletes) {
-        in_memory_table.erase(pk_to_delete);
     }
     
     if (in_memory_table.empty()) {
@@ -222,15 +260,17 @@ void update_parquet_file(const std::string& day, const std::unordered_map<int64_
 
 int main() {
     try {
-        // Start timer
         auto start_time = std::chrono::high_resolution_clock::now();
 
         std::ios::sync_with_stdio(false);
         std::cin.tie(nullptr);
 
-        std::unordered_map<std::string, std::unordered_map<int64_t, Change>> changes_by_day;
+        // MODIFICATION: Replaced 'changes_by_day' with separate insert/update maps.
+        std::unordered_map<std::string, std::unordered_map<int64_t, Change>> inserts_by_day;
+        std::unordered_map<std::string, std::unordered_map<int64_t, Change>> updates_by_day;
         std::unordered_map<std::string, std::unordered_set<int64_t>> deleted_by_day;
-        changes_by_day.reserve(100);
+        inserts_by_day.reserve(100);
+        updates_by_day.reserve(100);
         deleted_by_day.reserve(100);
 
         char current_type = 0;
@@ -247,7 +287,8 @@ int main() {
 
             if (tline == "INSERT INTO `enexory`.`api_data_timeseries`") {
                 if (current_type != 0 && pk != 0) {
-                    process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+                    // MODIFICATION: Pass new maps to process_block.
+                    process_block(current_type, pk, dt, val_raw, ts, inserts_by_day, updates_by_day, deleted_by_day);
                     pk = 0; ts = 0; dt.clear(); val_raw.clear();
                 }
                 current_type = 'I';
@@ -256,7 +297,7 @@ int main() {
                 continue;
             } else if (tline == "UPDATE `enexory`.`api_data_timeseries`") {
                 if (current_type != 0 && pk != 0) {
-                    process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+                    process_block(current_type, pk, dt, val_raw, ts, inserts_by_day, updates_by_day, deleted_by_day);
                     pk = 0; ts = 0; dt.clear(); val_raw.clear();
                 }
                 current_type = 'U';
@@ -265,7 +306,7 @@ int main() {
                 continue;
             } else if (tline == "DELETE FROM `enexory`.`api_data_timeseries`") {
                 if (current_type != 0 && pk != 0) {
-                    process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+                    process_block(current_type, pk, dt, val_raw, ts, inserts_by_day, updates_by_day, deleted_by_day);
                     pk = 0; ts = 0; dt.clear(); val_raw.clear();
                 }
                 current_type = 'D';
@@ -312,29 +353,32 @@ int main() {
         }
 
         if (current_type != 0 && pk != 0) {
-            process_block(current_type, pk, dt, val_raw, ts, changes_by_day, deleted_by_day);
+            process_block(current_type, pk, dt, val_raw, ts, inserts_by_day, updates_by_day, deleted_by_day);
         }
 
         const std::string base_folder = "/root/data";
         std::filesystem::create_directories(base_folder);
 
+        // MODIFICATION: Collect days to process from all three maps.
         std::unordered_set<std::string> days_to_process_set;
-        for (const auto& pair : changes_by_day) {
-            days_to_process_set.insert(pair.first);
-        }
-        for (const auto& pair : deleted_by_day) {
-            days_to_process_set.insert(pair.first);
-        }
+        for (const auto& pair : inserts_by_day) { days_to_process_set.insert(pair.first); }
+        for (const auto& pair : updates_by_day) { days_to_process_set.insert(pair.first); }
+        for (const auto& pair : deleted_by_day) { days_to_process_set.insert(pair.first); }
         std::vector<std::string> days_to_process(days_to_process_set.begin(), days_to_process_set.end());
 
-
         for (const std::string& day : days_to_process) {
+            // MODIFICATION: Find and pass the correct maps for the current day to the update function.
             const static std::unordered_map<int64_t, Change> empty_changes;
             const static std::unordered_set<int64_t> empty_deletes;
 
-            auto changes_it = changes_by_day.find(day);
-            const auto& upserts = (changes_it != changes_by_day.end()) 
-                                    ? changes_it->second 
+            auto inserts_it = inserts_by_day.find(day);
+            const auto& inserts = (inserts_it != inserts_by_day.end()) 
+                                    ? inserts_it->second 
+                                    : empty_changes;
+            
+            auto updates_it = updates_by_day.find(day);
+            const auto& updates = (updates_it != updates_by_day.end()) 
+                                    ? updates_it->second 
                                     : empty_changes;
 
             auto deleted_it = deleted_by_day.find(day);
@@ -342,17 +386,16 @@ int main() {
                                     ? deleted_it->second 
                                     : empty_deletes;
 
-            update_parquet_file(day, upserts, deletes, base_folder);
+            update_parquet_file(day, inserts, updates, deletes, base_folder);
         }
 
-        // End timer and print elapsed time
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         std::cout << "Total execution time: " << duration.count() / 1000.0 << " seconds\n";
 
     } catch (const std::exception& e) {
         std::cerr << "An unrecoverable error occurred: " << e.what() << std::endl;
-        return 1; // Exit with a non-zero status code to indicate failure
+        return 1;
     }
 
     return 0;
