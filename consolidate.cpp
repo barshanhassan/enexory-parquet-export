@@ -274,7 +274,6 @@ int main() {
         deleted_by_day.reserve(100);
 
         char current_type = 0;
-        bool in_where = false, in_set = false;
         int64_t pk = 0;
         uint64_t ts = 0;
         std::string dt, val_raw;
@@ -292,8 +291,6 @@ int main() {
                     pk = 0; ts = 0; dt.clear(); val_raw.clear();
                 }
                 current_type = 'I';
-                in_where = false;
-                in_set = false;
                 continue;
             } else if (tline == "UPDATE `enexory`.`api_data_timeseries`") {
                 if (current_type != 0 && pk != 0) {
@@ -301,8 +298,6 @@ int main() {
                     pk = 0; ts = 0; dt.clear(); val_raw.clear();
                 }
                 current_type = 'U';
-                in_where = false;
-                in_set = false;
                 continue;
             } else if (tline == "DELETE FROM `enexory`.`api_data_timeseries`") {
                 if (current_type != 0 && pk != 0) {
@@ -310,16 +305,10 @@ int main() {
                     pk = 0; ts = 0; dt.clear(); val_raw.clear();
                 }
                 current_type = 'D';
-                in_where = false;
-                in_set = false;
                 continue;
             } else if (tline == "WHERE") {
-                in_where = true;
-                in_set = false;
                 continue;
             } else if (tline == "SET") {
-                in_where = false;
-                in_set = true;
                 continue;
             }
 
