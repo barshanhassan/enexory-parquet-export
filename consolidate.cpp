@@ -108,7 +108,6 @@ inline void process_block(char type, int64_t pk, const std::string& dt,
     }
 }
 
-// MODIFICATION: Function signature updated for separate insert/update maps.
 void update_parquet_file(const std::string& day, 
                         const std::unordered_map<int64_t, Change>& inserts,
                         const std::unordered_map<int64_t, Change>& updates, 
@@ -117,6 +116,10 @@ void update_parquet_file(const std::string& day,
     std::string file_path = base_folder + "/" + day + ".parquet";
 
     if (inserts.empty() && updates.empty() && deletes.empty()) return;
+
+    size_t planned_deletes = deletes.size();
+    size_t planned_updates = updates.size();
+    size_t planned_inserts = inserts.size();
 
     auto id_field = arrow::field("id", arrow::int64());
     auto dt_field = arrow::field("date_time", arrow::utf8());
@@ -133,6 +136,7 @@ void update_parquet_file(const std::string& day,
 
     arrow::MemoryPool* pool = arrow::default_memory_pool();
     bool file_exists = std::filesystem::exists(file_path);
+    size_t previous_row_count = 0;
 
     if (file_exists) {
         std::shared_ptr<arrow::io::ReadableFile> infile;
@@ -167,13 +171,19 @@ void update_parquet_file(const std::string& day,
                 }
             }
         }
+
+        previous_row_count = in_memory_table.size();
     }
+
+    size_t applied_deletes = 0;
+    size_t applied_updates = 0;
 
     // MODIFICATION: New, ordered logic for applying changes.
 
     // 1. Apply Deletes first.
     for (const auto& pk_to_delete : deletes) {
-        in_memory_table.erase(pk_to_delete);
+        // erase returns 1 if an element was erased, 0 otherwise.
+        applied_deletes += in_memory_table.erase(pk_to_delete);
     }
 
     // 2. Apply Updates (but only if the key already exists).
@@ -187,6 +197,8 @@ void update_parquet_file(const std::string& day,
                 change.val_is_null ? std::nullopt : std::optional<double>(change.val),
                 ts_to_utc2(change.ts)
             };
+
+            applied_updates++;
         }
     }
     
@@ -201,16 +213,27 @@ void update_parquet_file(const std::string& day,
         };
     }
     
-    if (in_memory_table.empty()) {
+    size_t current_row_count = in_memory_table.size();
+    long long net_change = static_cast<long long>(current_row_count) - static_cast<long long>(previous_row_count);
+    
+    std::stringstream log_msg;
+    log_msg << file_path << ": Rows: " << previous_row_count << " -> " << current_row_count
+            << " (Net: " << (net_change >= 0 ? "+" : "") << net_change << ")"
+            << " | Deletes: " << applied_deletes << "/" << planned_deletes
+            << " | Updates: " << applied_updates << "/" << planned_updates
+            << " | Inserts: " << planned_inserts << "/" << planned_inserts;
+
+    if (current_row_count == 0) {
         if (file_exists) {
             try {
                 std::filesystem::remove(file_path);
-                std::cout << "Deleted " << file_path << ": No rows remain.\n";
+                std::cout << "Deleted " << log_msg.str() << std::endl;
             } catch (const std::filesystem::filesystem_error& e) {
                 std::cerr << "Failed to delete " << file_path << ": " << e.what() << "\n";
                 throw;
             }
         }
+        // If file didn't exist and still has 0 rows, do nothing.
         return;
     }
 
@@ -255,7 +278,11 @@ void update_parquet_file(const std::string& day,
         throw std::runtime_error(error_msg);
     }
 
-    std::cout << "Updated " << file_path << ". New row count: " << new_table->num_rows() << "\n";
+    if (file_exists) {
+        std::cout << "Modified " << log_msg.str() << std::endl;
+    } else {
+        std::cout << "Created " << log_msg.str() << std::endl;
+    }
 }
 
 int main() {
