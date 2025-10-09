@@ -97,93 +97,18 @@ parse_index() {
     grep -v '^[[:space:]]*$' "$1" | sed 's/[[:space:]]*$//'
 }
 
-# Get epoch ts from datetime (in UTC+2)
-get_ts() {
-    TZ=UTC-2 date -d "$1" +%s 2>/dev/null || {
-        echo "Error: Invalid datetime '$1'" >&2
-        exit 1
-    }
-}
+echo "Processing all files in the index from $START_DATETIME to $STOP_DATETIME (days back: $DAYS_BACK)"
 
-# Find latest file <= ts (last in ordered list with mtime <= ts)
-# If none are found, find the earliest file with mtime >= start_ts and mtime <= stop_ts
-get_start_file() {
-    local start_ts="$1"
-    local stop_ts="$2"
-    local last_leq=""
-    local earliest_in_range=""
-    while IFS= read -r file; do
-        [[ -f "$file" ]] || continue  # Skip if file missing
-        local mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
-        if (( mtime <= start_ts )); then
-            last_leq="$file"
-        elif (( mtime >= start_ts && mtime <= stop_ts )); then
-            if [[ -z "$earliest_in_range" ]]; then
-                earliest_in_range="$file"
-            fi
-        fi
-    done < <(parse_index "$BINLOG_INDEX")
-    if [[ -n "$last_leq" ]]; then
-        echo "$last_leq"
-    elif [[ -n "$earliest_in_range" ]]; then
-        echo "Warning: No binlog <= $START_DATETIME, using earliest in range: $earliest_in_range" >&2
-        echo "$earliest_in_range"
-    else
-        echo "Error: No binlog files in range $START_DATETIME to $STOP_DATETIME" >&2
-        exit 1
-    fi
-}
-
-# Find earliest file > ts (first in ordered list with mtime > ts), fallback to last
-get_end_file() {
-    local ts="$1"
-    local first_gt=""
-    local found_after=0
-    local last_file=""
-    while IFS= read -r file; do
-        [[ -f "$file" ]] || continue
-        last_file="$file"
-        local mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
-        if (( mtime > ts )); then
-            if (( found_after == 0 )); then
-                first_gt="$file"
-                found_after=1
-            fi
-        fi
-    done < <(parse_index "$BINLOG_INDEX")
-    if (( found_after == 1 )); then
-        echo "$first_gt"
-    else
-        echo "$last_file"
-    fi
-}
-
-# Main
-start_ts=$(get_ts "$START_DATETIME")
-stop_ts=$(get_ts "$STOP_DATETIME")
-
-start_file=$(get_start_file "$start_ts" "$stop_ts")
-end_file=$(get_end_file "$stop_ts")
-
-# Extract just the number (e.g., 237 from mysql-bin.000237)
-start_num=$(basename "$start_file" | sed -E 's/.*\.([0-9]{6})$/\1/' | sed 's/^0*//')
-end_num=$(basename "$end_file" | sed -E 's/.*\.([0-9]{6})$/\1/' | sed 's/^0*//')
-
-echo "Processing $START_DATETIME to $STOP_DATETIME (days back: $DAYS_BACK)"
-echo "Start file: $start_file (num: $start_num)"
-echo "End file: $end_file (num: $end_num)"
-
-# Generate file list from mysql-bin.index within start_num to end_num
+# Generate file list from mysql-bin.index
 files=()
 while IFS= read -r file; do
-    num=$(basename "$file" | sed -E 's/.*\.([0-9]{6})$/\1/' | sed 's/^0*//')
-    if [[ -n "$num" && "$num" -ge "$start_num" && "$num" -le "$end_num" && -f "$file" ]]; then
+    if [[ -f "$file" ]]; then
         files+=("$file")
     fi
 done < <(parse_index "$BINLOG_INDEX")
 
 if [[ ${#files[@]} -eq 0 ]]; then
-    echo "Error: No valid files in range" >&2
+    echo "Error: No valid files found in the index." >&2
     exit 1
 fi
 
