@@ -1,0 +1,445 @@
+# ----------------------------- VARIABLES -----------------------------
+
+MYSQL_ROOT_USER='root'
+MYSQL_ROOT_PW='root'
+REPL_USER='repl'
+REPL_PASS='replpass'
+MON_USER='monitor'
+MON_PASS='monitorpass'
+APP_USER='appuser'
+APP_PASS='proxypass'
+
+MASTER_PORT=1001
+REPL1_PORT=1002
+REPL2_PORT=1003
+
+PROXY_ADMIN_PORT=6032
+PROXY_CLIENT_PORT=6033
+
+# ----------------------------- SETUP MYSQL CONFIGS -----------------------------
+
+mkdir -p ~/mysql-test/{master,replica1,replica2}
+
+cat > ~/mysql-test/master/my.cnf <<'EOF'
+[mysqld]
+server-id=1
+log_bin=mysql-bin
+gtid_mode=ON
+enforce_gtid_consistency=ON
+binlog_format=ROW
+log_slave_updates = ON
+expire_logs_days = 3
+read_only = OFF
+bind-address = 0.0.0.0
+EOF
+
+cat > ~/mysql-test/replica1/my.cnf <<'EOF'
+[mysqld]
+server-id=2
+log_bin=mysql-bin
+gtid_mode=ON
+enforce_gtid_consistency=ON
+binlog_format=ROW
+log_slave_updates = ON
+expire_logs_days = 3
+read_only = OFF
+bind-address = 0.0.0.0
+EOF
+
+cat > ~/mysql-test/replica2/my.cnf <<'EOF'
+[mysqld]
+server-id=3
+log_bin=mysql-bin
+gtid_mode=ON
+enforce_gtid_consistency=ON
+binlog_format=ROW
+log_slave_updates = ON
+expire_logs_days = 3
+read_only = OFF
+bind-address = 0.0.0.0
+EOF
+
+# ----------------------------- CREATE DOCKER CONTAINERS -----------------------------
+
+# network
+docker network create \
+  --subnet=172.18.0.0/16 \
+  mysql-net
+
+# master
+docker run -d --name mysql-master --hostname mysql-master --network mysql-net --ip 172.18.0.2 \
+  -v ~/mysql-test/master/my.cnf:/etc/mysql/my.cnf:ro \
+  -v mysql_master_data:/var/lib/mysql \
+  -e MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PW} \
+  -p ${MASTER_PORT}:3306 \
+  mysql:5.7.42-debian
+
+# replica1
+docker run -d --name mysql-replica1 --hostname mysql-replica1 --network mysql-net --ip 172.18.0.3 \
+  -v ~/mysql-test/replica1/my.cnf:/etc/mysql/my.cnf:ro \
+  -v mysql_replica1_data:/var/lib/mysql \
+  -e MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PW} \
+  -p ${REPL1_PORT}:3306 \
+  mysql:5.7.42-debian
+
+# replica2
+docker run -d --name mysql-replica2 --hostname mysql-replica2 --network mysql-net --ip 172.18.0.4 \
+  -v ~/mysql-test/replica2/my.cnf:/etc/mysql/my.cnf:ro \
+  -v mysql_replica2_data:/var/lib/mysql \
+  -e MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PW} \
+  -p ${REPL2_PORT}:3306 \
+  mysql:5.7.42-debian
+
+# proxysql
+docker run -d \
+  --name proxysql \
+  --hostname proxysql \
+  --network mysql-net --ip 172.18.0.5 \
+  -p ${PROXY_ADMIN_PORT}:6032 \
+  -p ${PROXY_CLIENT_PORT}:6033 \
+  proxysql/proxysql:2.6.2
+
+# MySQL client
+docker run -d \
+  --name mysql-client \
+  --network mysql-net --ip 172.18.0.6 \
+  --hostname mysql-client \
+  mysql:5.7.42-debian tail -f /dev/null
+
+# SC
+docker run -d \
+  --name sc \
+  --network mysql-net --ip 172.18.0.7 \
+  --hostname sc \
+  ubuntu:22.04 tail -f /dev/null
+
+# docker rm -f mysql-master mysql-replica1 mysql-replica2 proxysql mysql-client sc
+# docker volume rm mysql_master_data mysql_replica1_data mysql_replica2_data
+# docker network rm mysql-net
+
+# ----------------------------- CREATE TEST TABLE IN ADVANCE -----------------------------
+
+docker exec -i mysql-master mysql -uroot -p$MYSQL_ROOT_PW -e "
+CREATE DATABASE IF NOT EXISTS testdb;
+USE testdb;
+CREATE TABLE IF NOT EXISTS test (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    x INT
+);"
+
+# docker exec -i mysql-master mysql -uroot -p$MYSQL_ROOT_PW -e "DROP TABLE IF EXISTS testdb.test;"
+
+# ----------------------------- SET UP REPLICATION ON MYSQL CONTAINERS -----------------------------
+
+docker exec -it mysql-client mysql -h mysql-master -uroot -p$MYSQL_ROOT_PW -e "
+CREATE USER IF NOT EXISTS '$REPL_USER'@'%' IDENTIFIED BY '$REPL_PASS';
+GRANT ALL PRIVILEGES ON *.* TO '$REPL_USER'@'%' WITH GRANT OPTION;FLUSH PRIVILEGES;
+"
+
+docker exec -it mysql-client mysql -h mysql-replica1 -uroot -p$MYSQL_ROOT_PW -e "
+CREATE USER IF NOT EXISTS '$REPL_USER'@'%' IDENTIFIED BY '$REPL_PASS';
+GRANT ALL PRIVILEGES ON *.* TO '$REPL_USER'@'%' WITH GRANT OPTION;FLUSH PRIVILEGES;
+"
+
+docker exec -it mysql-client mysql -h mysql-replica2 -uroot -p$MYSQL_ROOT_PW -e "
+CREATE USER IF NOT EXISTS '$REPL_USER'@'%' IDENTIFIED BY '$REPL_PASS';
+GRANT ALL PRIVILEGES ON *.* TO '$REPL_USER'@'%' WITH GRANT OPTION;FLUSH PRIVILEGES;
+"
+
+docker exec -it mysql-replica1 mysql -uroot -p$MYSQL_ROOT_PW -e "
+STOP SLAVE;
+CHANGE MASTER TO
+  MASTER_AUTO_POSITION=1,
+  MASTER_HOST='mysql-master',
+  MASTER_USER='$REPL_USER',
+  MASTER_PASSWORD='$REPL_PASS';
+START SLAVE;
+"
+
+docker exec -it mysql-replica2 mysql -uroot -p$MYSQL_ROOT_PW -e "
+STOP SLAVE;
+CHANGE MASTER TO
+  MASTER_AUTO_POSITION=1,
+  MASTER_HOST='mysql-master',
+  MASTER_USER='$REPL_USER',
+  MASTER_PASSWORD='$REPL_PASS';
+START SLAVE;
+"
+
+# ----------------------------- SETUP PROXYSQL -----------------------------
+
+docker exec -it mysql-client mysql -h mysql-master -uroot -p$MYSQL_ROOT_PW -e "
+CREATE USER IF NOT EXISTS '$MON_USER'@'%' IDENTIFIED BY '$MON_PASS';
+GRANT REPLICATION CLIENT, REPLICATION SLAVE, PROCESS ON *.* TO '$MON_USER'@'%';
+
+CREATE USER IF NOT EXISTS '$APP_USER'@'%' IDENTIFIED BY '$APP_PASS';
+GRANT SELECT, INSERT, UPDATE, DELETE ON *.* TO '$APP_USER'@'%' WITH GRANT OPTION;
+
+FLUSH PRIVILEGES;
+"
+
+docker exec -it proxysql mysql -uadmin -padmin -h127.0.0.1 -P6032 -e "
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (10, 'mysql-master', 3306, 0);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, 'mysql-master', 3306, 5);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, 'mysql-replica1', 3306, 5);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, 'mysql-replica2', 3306, 5);
+LOAD MYSQL SERVERS TO RUNTIME;
+SAVE MYSQL SERVERS TO DISK;
+
+INSERT INTO mysql_users(username, password, default_hostgroup, transaction_persistent) VALUES ('$APP_USER', '$APP_PASS', 10, 1);
+INSERT INTO mysql_users (username, password, default_hostgroup) VALUES ('$MON_USER', '$MON_PASS', 0);
+LOAD MYSQL USERS TO RUNTIME;
+SAVE MYSQL USERS TO DISK;
+
+INSERT INTO mysql_query_rules(rule_id,active,match_pattern,destination_hostgroup,apply) VALUES (1,1,'^SELECT',20,1), (2,1,'.*',10,1);
+LOAD MYSQL QUERY RULES TO RUNTIME;
+SAVE MYSQL QUERY RULES TO DISK;
+
+UPDATE global_variables 
+SET variable_value='admin:admin;admin2:admin2' 
+WHERE variable_name='admin-admin_credentials';
+UPDATE global_variables
+SET variable_value='$MON_USER'
+WHERE variable_name='mysql-monitor_username';
+UPDATE global_variables
+SET variable_value='$MON_PASS'
+WHERE variable_name='mysql-monitor_password';
+
+SET mysql-monitor_ping_interval=1000;
+SET mysql-monitor_connect_interval=1000;
+SET mysql-monitor_slave_lag_when_null=5;
+
+LOAD ADMIN VARIABLES TO RUNTIME;
+SAVE ADMIN VARIABLES TO DISK;
+LOAD MYSQL VARIABLES TO RUNTIME;
+SAVE MYSQL VARIABLES TO DISK;
+"
+
+# ----------------------------- TEST REPLICATION AND PROXYSQL -----------------------------
+
+# Insert '1'
+docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D testdb -e "
+INSERT INTO test (x) VALUES (1);"
+
+# Select all
+docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D testdb -e "
+SELECT * FROM test;"
+
+# Stop master
+docker stop mysql-master
+
+# Insert '2' (may fail/block if ProxySQL routes writes only to master)
+docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D testdb -e "
+INSERT INTO test (x) VALUES (2);"
+
+# Select all
+docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D testdb -e "
+SELECT * FROM test;"
+
+# Start master
+docker start mysql-master
+
+# Insert '3'
+docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D testdb -e "
+INSERT INTO test (x) VALUES (3);"
+
+# Select all via ProxySQL
+docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D testdb -e "
+SELECT * FROM test;"
+
+# Check replica2 directly
+docker exec -i mysql-replica2 mysql -uroot -p$MYSQL_ROOT_PW -D testdb -e "
+SELECT * FROM test;"
+
+# Delete table data
+docker exec -i mysql-master mysql -uroot -p$MYSQL_ROOT_PW -D testdb -e "
+DELETE FROM testdb.test WHERE 1;"
+
+# Select all via ProxySQL
+docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D testdb -e "
+SELECT * FROM test;"
+
+# ----------------------------- SET UP SSH ON MYSQL CONTAINERS -----------------------------
+
+for c in mysql-master mysql-replica1 mysql-replica2; do
+  echo "Setting up and starting SSH in $c..."
+  docker exec -it "$c" bash -c '
+    set -e
+    # fix outdated repos for Debian Buster slim
+    sed -i "s|http://deb.debian.org/debian|http://archive.debian.org/debian|g" /etc/apt/sources.list || true
+    sed -i "s|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g" /etc/apt/sources.list || true
+    echo "Acquire::Check-Valid-Until false;" > /etc/apt/apt.conf.d/99no-check-valid
+
+    # update and install SSH tools
+    apt-get update -o Acquire::AllowInsecureRepositories=true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server openssh-client passwd
+
+    # prepare directories and permissions
+    mkdir -p /var/run/sshd /root/.ssh /etc/ssh
+    chmod 700 /root/.ssh
+    chmod 755 /var/run/sshd
+
+    # root password and sshd config
+    echo "root:rootpass" | chpasswd
+    echo "PermitRootLogin yes" > /etc/ssh/sshd_config
+    echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
+
+    # generate host keys if missing
+    ssh-keygen -A
+
+    # start sshd in background safely
+    nohup /usr/sbin/sshd -D > /var/log/sshd.log 2>&1 &
+    disown
+  '
+done
+
+for c in mysql-master mysql-replica1 mysql-replica2; do
+  echo "Ensuring SSH stays running in $c..."
+  docker exec -d "$c" bash -c '
+    while true; do
+      pgrep sshd >/dev/null 2>&1 || /usr/sbin/sshd -D > /var/log/sshd.log 2>&1 &
+      sleep 5
+    done
+  '
+done
+
+for c in mysql-master mysql-replica1 mysql-replica2; do
+  docker exec $c bash -c "
+    echo '172.18.0.2 mysql-master' >> /etc/hosts
+    echo '172.18.0.3 mysql-replica1' >> /etc/hosts
+    echo '172.18.0.4 mysql-replica2' >> /etc/hosts
+  "
+done
+
+# Step 1: Generate SSH keys in each container
+for c in mysql-master mysql-replica1 mysql-replica2; do
+  echo "Generating key in $c..."
+  docker exec -it $c bash -c '
+    mkdir -p /root/.ssh &&
+    chmod 700 /root/.ssh &&
+    if [ ! -f /root/.ssh/id_rsa ]; then
+      ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
+    fi
+  '
+done
+
+# Step 2: Gather all public keys on host
+mkdir -p /tmp/container_keys
+for c in mysql-master mysql-replica1 mysql-replica2; do
+  docker exec $c cat /root/.ssh/id_rsa.pub > /tmp/container_keys/$c.pub
+done
+
+# Step 3: Distribute authorized_keys to all containers
+for target in mysql-master mysql-replica1 mysql-replica2; do
+  echo "Distributing keys to $target..."
+  cat /tmp/container_keys/*.pub | docker exec -i $target bash -c '
+    cat >> /root/.ssh/authorized_keys &&
+    chmod 600 /root/.ssh/authorized_keys
+  '
+done
+
+docker exec -it mysql-master ssh -o StrictHostKeyChecking=no root@mysql-replica1 "echo OK"
+docker exec -it mysql-master ssh -o StrictHostKeyChecking=no root@mysql-replica2 "echo OK"
+docker exec -it mysql-replica1 ssh -o StrictHostKeyChecking=no root@mysql-master "echo OK"
+docker exec -it mysql-replica1 ssh -o StrictHostKeyChecking=no root@mysql-replica2 "echo OK"
+docker exec -it mysql-replica2 ssh -o StrictHostKeyChecking=no root@mysql-master "echo OK"
+docker exec -it mysql-replica2 ssh -o StrictHostKeyChecking=no root@mysql-replica1 "echo OK"
+
+# ----------------------------- SET UP SC CONTAINER -----------------------------
+
+docker exec -it sc bash -c '
+apt-get update
+apt-get install -y ssh rsync openssh-client sshpass nano
+'
+
+docker exec -it sc bash -c '
+  cat >> /etc/hosts <<EOF
+172.18.0.2 mysql-master
+172.18.0.3 mysql-replica1
+172.18.0.4 mysql-replica2
+EOF
+'
+
+docker exec -it sc bash -c '
+  mkdir -p /root/.ssh
+  chmod 700 /root/.ssh
+
+  if [ ! -f /root/.ssh/id_rsa ]; then
+    ssh-keygen -t rsa -N "" -f /root/.ssh/id_rsa
+  fi
+'
+
+for node in mysql-master mysql-replica1 mysql-replica2; do
+  PUBKEY=$(docker exec -it sc cat /root/.ssh/id_rsa.pub)
+  docker exec -it $node bash -c "
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    echo '$PUBKEY' >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+  "
+done
+
+for node in mysql-master mysql-replica1 mysql-replica2; do
+  PUBKEY=$(docker exec -it sc cat /root/.ssh/id_rsa.pub)
+  docker exec -it $node bash -c "
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    echo '$PUBKEY' >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+  "
+done
+
+docker exec -it sc ssh -o StrictHostKeyChecking=no root@mysql-master "echo OK"
+docker exec -it sc ssh -o StrictHostKeyChecking=no root@mysql-replica1 "echo OK"
+docker exec -it sc ssh -o StrictHostKeyChecking=no root@mysql-replica2 "echo OK"
+
+docker exec -it sc bash -c '
+  apt install -y python3 python3.10-venv
+  cd /root
+  python3 -m venv .venv
+  source .venv/bin/activate
+  pip install mysql-connector-python==9.4.0
+
+  nano /root/HA.py
+'
+
+# nohup docker exec -i sc /root/.venv/bin/python3.10 -u /root/HA.py > output.log 2>&1 &
+
+# 
+# tail -f output.log
+# rm output.log
+
+# ----------------------------- TESTING HA.py -----------------------------
+
+docker exec -i mysql-master mysql -uroot -p$MYSQL_ROOT_PW -D testdb -e "
+DELETE FROM testdb.test WHERE 1;"
+
+docker exec -i mysql-master mysql -uroot -p$MYSQL_ROOT_PW -e "
+CREATE DATABASE IF NOT EXISTS testdb;
+USE testdb;
+CREATE TABLE IF NOT EXISTS test (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    x INT
+);"
+
+# docker network disconnect mysql-net mysql-master
+# docker network connect mysql-net mysql-master
+# docker network disconnect mysql-net mysql-replica1
+# docker network connect mysql-net mysql-replica1
+# docker network disconnect mysql-net mysql-replica2
+# docker network connect mysql-net mysql-replica2
+
+cd ~/mysql-test/
+
+source .venv/bin/activate
+
+pip install mysql-connector-python==9.4.0
+
+rm test2.py
+nano test2.py
+
+rm output.log
+nohup docker exec -i sc /root/.venv/bin/python3.10 -u /root/HA.py > output.log 2>&1 &
+# 1134804
+python test2.py
+tail -f output_HA.log
