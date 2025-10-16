@@ -8,7 +8,6 @@ source_node = 'mysql-replica1'
 master = 'mysql-master'
 MYSQL_USER = "repl"
 MYSQL_PASS = "replpass"
-DATA_DIR = "/var/lib/mysql"
 
 def mysql_connect(host, user, password, port=3306):
     try:
@@ -52,32 +51,34 @@ def _point_to_master(node, master):
     finally:
         conn.close()
 
-subprocess.run(f"ssh root@{node} 'systemctl stop mysql'", shell=True, check=True)
-if DATA_DIR.strip() == "":
-    raise Exception
+conn = mysql_connect(node, MYSQL_USER, MYSQL_PASS)
+cursor = conn.cursor()
+cursor.execute("STOP SLAVE;")
+cursor.execute("RESET SLAVE ALL;")
+cursor.execute("RESET MASTER;")
+conn.commit()
+conn.close()
 
-wipe_data_cmd = f"ssh root@{node} 'rm -rf {DATA_DIR}/*'"
-subprocess.run(wipe_data_cmd, shell=True, check=True)
-print(f"[INFO] Data directory wiped on {node}")
-
-xtrabackup_cmd = (
-    f"ssh root@{source_node} "
-    f"\"xtrabackup --backup --stream=xbstream --user={MYSQL_USER} --password={MYSQL_PASS} --databases='*'\" "
-    f"| ssh root@{node} \"xbstream -x -C {DATA_DIR}\""
+# 1. Drop only user (non-system) databases on target
+wipe_cmd = (
+    f"ssh root@{node} "
+    f"\"mysql -u{MYSQL_USER} -p{MYSQL_PASS} -N -e "
+    f"'SHOW DATABASES' | grep -Ev '^(mysql|sys|performance_schema|information_schema)$' "
+    f"| xargs -I{{}} mysql -u{MYSQL_USER} -p{MYSQL_PASS} -e 'DROP DATABASE IF EXISTS {{}};'\""
 )
+subprocess.run(wipe_cmd, shell=True, check=True)
+print(f"[INFO] User databases wiped on {node}")
 
-subprocess.run(xtrabackup_cmd, shell=True, check=True)
-print(f"[INFO] Backup streamed from {source_node} to {node}")
-
-prepare_cmd = f"ssh root@{node} 'xtrabackup --prepare --target-dir={DATA_DIR}'"
-subprocess.run(prepare_cmd, shell=True, check=True)
-print(f"[INFO] Backup prepared on {node}")
-
-perm_cmd = f"ssh root@{node} 'chown -R mysql:mysql {DATA_DIR} && chmod -R 750 {DATA_DIR}'"
-subprocess.run(perm_cmd, shell=True, check=True)
-print(f"[INFO] Permissions fixed on {node}")
-
-subprocess.run(f"ssh root@{node} 'systemctl start mysql'", shell=True, check=True)
-print(f"[INFO] MySQL started on {node}")
+# 2. Stream dump directly from source to target (no temp file)
+dump_stream_cmd = (
+    f"ssh root@{source_node} "
+    f"\"mysqldump --all-databases -h {source_node} -u{MYSQL_USER} -p{MYSQL_PASS} "
+    f"--single-transaction --routines --triggers --replace "
+    f"--flush-privileges --hex-blob --default-character-set=utf8 "
+    f"--set-gtid-purged=OFF --insert-ignore\" "
+    f"| ssh root@{node} "
+    f"\"mysql -u{MYSQL_USER} -p{MYSQL_PASS}\""
+)
+subprocess.run(dump_stream_cmd, shell=True, check=True)
 
 print(_point_to_master(node, master))

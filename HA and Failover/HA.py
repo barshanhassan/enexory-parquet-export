@@ -345,7 +345,7 @@ def rebuild_node(node):
             dump_stream_cmd = (
                 f"ssh root@{source_node} "
                 f"\"mysqldump --all-databases -h {source_node} -u{MYSQL_USER} -p{MYSQL_PASS} "
-                f"--single-transaction --routines --triggers "
+                f"--single-transaction --routines --triggers --replace "
                 f"--flush-privileges --hex-blob --default-character-set=utf8 "
                 f"--set-gtid-purged=OFF --insert-ignore\" "
                 f"| ssh root@{node} "

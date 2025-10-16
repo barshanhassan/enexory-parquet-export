@@ -61,6 +61,9 @@ EOF
 
 # ----------------------------- CREATE DOCKER CONTAINERS -----------------------------
 
+docker rm -f mysql-master mysql-replica1 mysql-replica2 proxysql mysql-client sc
+docker network rm mysql-net
+
 # network
 docker network create \
   --subnet=172.18.0.0/16 \
@@ -69,24 +72,18 @@ docker network create \
 # master
 docker run -d --init --name mysql-master --hostname mysql-master --network mysql-net --ip 172.18.0.2 \
   -v ~/mysql-test/master/my.cnf:/etc/mysql/my.cnf:ro \
-  -v mysql_master_data:/var/lib/mysql \
-  -e MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PW} \
   -p ${MASTER_PORT}:3306 \
   custom-mysql:5.7-debian-ram
 
 # replica1
 docker run -d --init --name mysql-replica1 --hostname mysql-replica1 --network mysql-net --ip 172.18.0.3 \
   -v ~/mysql-test/replica1/my.cnf:/etc/mysql/my.cnf:ro \
-  -v mysql_replica1_data:/var/lib/mysql \
-  -e MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PW} \
   -p ${REPL1_PORT}:3306 \
   custom-mysql:5.7-debian-ram
 
 # replica2
 docker run -d --init --name mysql-replica2 --hostname mysql-replica2 --network mysql-net --ip 172.18.0.4 \
   -v ~/mysql-test/replica2/my.cnf:/etc/mysql/my.cnf:ro \
-  -v mysql_replica2_data:/var/lib/mysql \
-  -e MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PW} \
   -p ${REPL2_PORT}:3306 \
   custom-mysql:5.7-debian-ram
 
@@ -113,11 +110,11 @@ docker run -d \
   --hostname sc \
   ubuntu:22.04 tail -f /dev/null
 
-# docker rm -f mysql-master mysql-replica1 mysql-replica2 proxysql mysql-client sc
-# docker volume rm mysql_master_data mysql_replica1_data mysql_replica2_data
-# docker network rm mysql-net
-
 # ----------------------------- CREATE TEST TABLE IN ADVANCE -----------------------------
+
+docker exec -i mysql-master mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root';"
+docker exec -i mysql-replica1 mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root';"
+docker exec -i mysql-replica2 mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root';"
 
 docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "
 CREATE DATABASE IF NOT EXISTS testdb;
@@ -226,7 +223,7 @@ docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D t
 SELECT * FROM test;"
 
 # Stop master
-docker stop mysql-master
+docker network disconnect mysql-net mysql-master
 
 # Insert '2' (may fail/block if ProxySQL routes writes only to master)
 docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D testdb -e "
@@ -237,7 +234,7 @@ docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D t
 SELECT * FROM test;"
 
 # Start master
-docker start mysql-master
+docker network connect mysql-net mysql-master
 
 # Insert '3'
 docker exec -i mysql-client mysql -hproxysql -P6033 -u$APP_USER -p$APP_PASS -D testdb -e "
@@ -267,7 +264,7 @@ docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT
 docker exec -i mysql-replica1 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SHOW SLAVE STATUS\G"
 docker exec -i mysql-replica2 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SHOW SLAVE STATUS\G"
 
-# ----------------------------- SET UP SSH ON MYSQL CONTAINERS -----------------------------
+# ----------------------------- SET UP SSH AND PERCONA XTRABACKUP 24 ON MYSQL CONTAINERS -----------------------------
 
 for c in mysql-master mysql-replica1 mysql-replica2; do
   echo "Setting up and starting SSH in $c..."
@@ -411,7 +408,8 @@ docker exec -it sc bash -c '
   python3 -m venv .venv
   source .venv/bin/activate
   pip install mysql-connector-python==9.4.0
-
+'
+docker exec -it sc bash -c '
   nano /root/HA.py
 '
 
