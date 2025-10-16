@@ -54,7 +54,8 @@ def get_gtid(host):
         gtid = cursor.fetchone()[0]
         conn.close()
         return gtid
-    except mysql.connector.Error:
+    except Exception as e:
+        print(f"[ERROR] Failed to get gtid for {host} due to an error: {e}")
         conn.close()
         return ""
 
@@ -96,7 +97,7 @@ def set_proxysql_node_status(node, node_status):
             cursor.execute("SAVE MYSQL SERVERS TO DISK;")
             conn.commit()
             return True
-        except mysql.connector.Error as e:
+        except Exception as e:
             print(f"[ERROR] Failed to execute ProxySQL update: {e}")
             return False
         finally:
@@ -126,7 +127,7 @@ def update_proxysql_write(master_host):
 
             conn.commit()
             return True
-        except mysql.connector.Error as e:
+        except Exception as e:
             print(f"[ERROR] Failed to execute ProxySQL update: {e}")
             return False
         finally:
@@ -173,12 +174,15 @@ def _point_to_master(node, master):
         cursor.execute("SHOW SLAVE STATUS")
         row = cursor.fetchone()
 
+        if not row:
+            return 1
+
         if row.get('Slave_SQL_Running') == 'Yes':
             return 0
 
         return -1
-    except mysql.connector.Error as e:
-        print(f"[ERROR] Node {node} has an error: {e}")
+    except Exception as e:
+        print(f"[ERROR] Node {node} with master {master} has an error: {e}")
         return 1
     finally:
         conn.close()
@@ -275,7 +279,8 @@ def get_lag_hours(target_node):
         conn.close()
         if result and result['Seconds_Behind_Master'] is not None:
             return result['Seconds_Behind_Master'] / 3600
-    except Exception:
+    except Exception as e:
+        print(f"[ERROR] Failed to get lag hours for {target_node} due to an error: {e}")
         pass
     return None
 
@@ -311,6 +316,7 @@ def rebuild_node(node):
         return
 
     def job():
+        rebuild_success = False
         try:
             print(f"[INFO] Rebuilding {node} from {source_node}...")
 
@@ -320,6 +326,7 @@ def rebuild_node(node):
                     cursor = conn.cursor()
                     cursor.execute("STOP SLAVE;")
                     cursor.execute("RESET SLAVE ALL;")
+                    cursor.execute("RESET MASTER;")
                     conn.commit()
                 finally:
                     conn.close()
@@ -356,6 +363,7 @@ def rebuild_node(node):
                     res = attempt_repoint(node, current_master)
                     if res == 0:
                         print(f"[INFO] {node} now pointing to master {current_master}")
+                        rebuild_success = True
                     else:
                         print(f"[ERROR] Issue with {node}. Setting to dead.")
                         with STATE_LOCK:
@@ -365,14 +373,12 @@ def rebuild_node(node):
                                 time.sleep(SMALL_INTERVAL)
                             NODE_GTID[node] = ""                        
                     break
-
-        except subprocess.CalledProcessError as e:
+        except Exception as e:
             print(f"[ERROR] Rebuild failed for {node}: {e}")
-
         finally:
             with STATE_LOCK:
                 if NODE_STATUS.get(node) == "rebuilding":
-                    NODE_STATUS[node] = "alive" if is_alive(node) else "dead"
+                    NODE_STATUS[node] = "alive" if is_alive(node) and rebuild_success else "dead"
                     while not set_proxysql_node_status(node, NODE_STATUS[node]):
                         print(f"Could not update {node} status in ProxySQL. Retrying.")
                         time.sleep(SMALL_INTERVAL)
