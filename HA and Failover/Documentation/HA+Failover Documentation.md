@@ -66,6 +66,8 @@ When the original master returns and is healthy (no replication errors), it can 
 
 ## Setting up this solution
 This section will detail the steps to setup this solution.
+
+**HIGHLY RECOMMENDED:** Please see the "Rollout strategy to an existing cluster" before following these steps.
 #### Pre-requisites before setup
 The following are the pre-requisites before setting up this solution:
 1. Odd number of MySQL nodes
@@ -109,7 +111,68 @@ GRANT ALL PRIVILEGES ON *.* TO '<Replica Username>'@'%' WITH GRANT OPTION;FLUSH 
 
 #### Setup after pre-requisites are met
 To setup ProxySQL and `orchestrator.py`, follow these steps:
+1. On a different node from the MySQL nodes, install `ProxySQL 2.6.2`, `Python 3.10` and `python3.10-venv`. Make sure this node does not have MySQL server running on it and do not run it in the future either.
+2. Setup a virtual python environment using `python -m venv .venv`
+3. Activate the environment and install MySQL connector for python by running `pip install mysql-connector-python==9.4.0`
+4. Move the `orchestrator.py` script to the node.
+5. Set up a monitor user on the master MySQL node (replication should copy them) with the following privileges: REPLICATION CLIENT, REPLICATION SLAVE, PROCESS. Example command is provided.
+6. Set up an app user on the master MySQL node (replication should copy them) with the following privileges: SELECT, INSERT, UPDATE, DELETE. You can remove or grant additional privileges. Example command is provided.
+7. Configure ProxySQL using the guide below.
 
+Example of how to create monitor user with required privileges:
+```sql
+CREATE USER IF NOT EXISTS '<Monitor Username>'@'%' IDENTIFIED BY '<Monitor Password>';
+
+GRANT REPLICATION CLIENT, REPLICATION SLAVE, PROCESS ON *.* TO '<Monitor Username>'@'%';
+```
+
+Example of how to create app user with required privileges:
+```sql
+CREATE USER IF NOT EXISTS '<App Username>'@'%' IDENTIFIED BY '<App Password>';
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON *.* TO '<App Username>'@'%';
+```
+
+
+To configure ProxySQL, login via a MySQL client locally on the node using port 6032 with the following credentials: -uadmin -padmin
+
+Then run the following MySQL statements:
+```mysql
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (10, '<Master Node IP>', 3306, 0);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, '<Master Node IP>', 3306, 5);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, '<Replica 1 Node IP>', 3306, 5);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, '<Replica 2 Node IP>', 3306, 5);
+LOAD MYSQL SERVERS TO RUNTIME;
+SAVE MYSQL SERVERS TO DISK;
+
+INSERT INTO mysql_users(username, password, default_hostgroup, transaction_persistent) VALUES ('<App Username>', '<App User Password>', 10, 1);
+INSERT INTO mysql_users(username, password, default_hostgroup) VALUES ('<Monitor Username>', '<Monitor User Password>', 0);
+LOAD MYSQL USERS TO RUNTIME;
+SAVE MYSQL USERS TO DISK;
+
+INSERT INTO mysql_query_rules(rule_id,active,match_pattern,destination_hostgroup,apply) VALUES (1,1,'^SELECT',20,1), (2,1,'.*',10,1);
+LOAD MYSQL QUERY RULES TO RUNTIME;
+SAVE MYSQL QUERY RULES TO DISK;
+
+UPDATE global_variables
+SET variable_value='<Monitor Username>'
+WHERE variable_name='mysql-monitor_username';
+UPDATE global_variables
+SET variable_value='<Monitor Password>'
+WHERE variable_name='mysql-monitor_password';
+
+SET mysql-port=3306;
+SET mysql-monitor_ping_interval=1000;
+SET mysql-monitor_connect_interval=1000;
+SET mysql-monitor_slave_lag_when_null=5;
+
+LOAD ADMIN VARIABLES TO RUNTIME;
+SAVE ADMIN VARIABLES TO DISK;
+LOAD MYSQL VARIABLES TO RUNTIME;
+SAVE MYSQL VARIABLES TO DISK;
+```
+
+Now when you're ready, run `orchestrator.py` using the python virtual environment.
 
 ## Tips and things to keep in mind
 Below are some tips and things to keep in mind while implementing and running this solution:
