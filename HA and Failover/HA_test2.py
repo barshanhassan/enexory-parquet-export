@@ -9,7 +9,7 @@ import subprocess
 
 # ---------------- CONFIG ----------------
 PROXYSQL_NODE = "127.0.0.1"
-PROXYSQL_PORT = 6033
+PROXYSQL_PORT = 3306
 APP_USER = "appuser"
 APP_PASS = "proxypass"
 TEST_DB = "testdb"

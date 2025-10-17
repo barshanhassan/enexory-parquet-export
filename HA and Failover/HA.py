@@ -12,8 +12,9 @@ PROXYSQL_ADMIN = "admin2"
 PROXYSQL_PASS = "admin2"
 WRITE_HG = 10
 READ_HG = 20
+BROKEN_HG = 30
 PROXYSQL_NODE = "proxysql"
-NODE_LIST = ["mysql-master", "mysql-replica1", "mysql-replica2"]
+NODE_LIST = []
 CONNECTION_TIMEOUT = 5 # seconds
 SLEEP_INTERVAL = 4 # seconds
 SMALL_INTERVAL = 1 # seconds
@@ -22,7 +23,12 @@ REPOINT_RETRIES = 2
 REPOINT_RETRY_DELAY = 4 # seconds
 MASTER_ALIVE_RETIRES = 2
 MASTER_ALIVE_RETRY_DELAY = 4 # seconds
-QUORUM = (len(NODE_LIST) // 2) + 1
+QUORUM = -1
+# EMAIL
+# EMAIL
+# EMAIL
+# EMAIL
+# EMAIL
 # ---------------------------------------
 
 NODE_GTID = {}
@@ -133,6 +139,36 @@ def update_proxysql_write(master_host):
         finally:
             conn.close()
 
+def update_proxysql_broken(broken_host):
+    """Sets proxysql to only have hostgroup 30 entry when it comes to the broken host. Returns True on success."""
+    with PROXYSQL_LOCK:
+        print(f"[INFO] Updating ProxySQL: {broken_host} broken")
+        conn = mysql_connect(PROXYSQL_NODE, PROXYSQL_ADMIN, PROXYSQL_PASS, port=6032)
+        if not conn:
+            print("[ERROR] Cannot connect to ProxySQL")
+            return False
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute("BEGIN;")
+            cursor.execute("DELETE FROM mysql_servers WHERE hostname = %s;", (broken_host,))
+            cursor.execute("""
+                INSERT INTO mysql_servers (hostgroup_id, hostname, port)
+                VALUES (%s, %s, %s);
+            """, (BROKEN_HG, broken_host, 3306))
+            cursor.execute("COMMIT;")
+            
+            cursor.execute("LOAD MYSQL SERVERS TO RUNTIME;")
+            cursor.execute("SAVE MYSQL SERVERS TO DISK;")
+
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to execute ProxySQL update: {e}")
+            return False
+        finally:
+            conn.close()
+
 def handle_promotion(master_node):
     """Promotes a DB node and attempts to update ProxySQL, setting state flags."""
     print(f"[INFO] Promoting {master_node} to master...")
@@ -186,6 +222,16 @@ def _point_to_master(node, master):
         return 1
     finally:
         conn.close()
+
+def attempt_repoint(node, master):
+    last_res = 1
+    for i in range(REPOINT_RETRIES):
+        last_res = _point_to_master(node, master)
+        if last_res == 0:
+            break
+        print(f"[WARN] Failed to point {node} to {master}. Retrying... ({i+1}/{REPOINT_RETRIES})")
+        time.sleep(REPOINT_RETRY_DELAY)
+    return last_res
 
 def latest_replica():
     with STATE_LOCK:
@@ -294,107 +340,13 @@ def select_dump_source(node):
                     return n
     return master
 
-def rebuild_node(node):
-    with STATE_LOCK:
-        if NODE_STATUS.get(node) == "rebuilding":
-            return
-        NODE_STATUS[node] = "rebuilding"
-        while not set_proxysql_node_status(node, NODE_STATUS[node]):
-            print(f"Could not update {node} status in ProxySQL. Retrying.")
-            time.sleep(SMALL_INTERVAL)
-        NODE_GTID[node] = ""
+# ---------------- Load Save ----------------
+NODE_LIST = ["mysql-master", "mysql-replica1", "mysql-replica2"]
+QUORUM = (len(NODE_LIST) // 2) + 1
 
-    source_node = select_dump_source(node)
-    if not source_node:
-        print(f"[ERROR] No valid source node found to rebuild {node}. Aborting rebuild.")
-        with STATE_LOCK:
-            NODE_STATUS[node] = "dead"
-            while not set_proxysql_node_status(node, NODE_STATUS[node]):
-                print(f"Could not update {node} status in ProxySQL. Retrying.")
-                time.sleep(SMALL_INTERVAL)
-            NODE_GTID[node] = ""
-        return
 
-    def job():
-        rebuild_success = False
-        try:
-            print(f"[INFO] Rebuilding {node} from {source_node}...")
+# ---------------- Email Thread ----------------
 
-            conn = mysql_connect(node, MYSQL_USER, MYSQL_PASS)
-            if conn:
-                try:
-                    cursor = conn.cursor()
-                    cursor.execute("STOP SLAVE;")
-                    cursor.execute("RESET SLAVE ALL;")
-                    cursor.execute("RESET MASTER;")
-                    conn.commit()
-                finally:
-                    conn.close()
-
-            # 1. Drop only user (non-system) databases on target
-            wipe_cmd = (
-                f"ssh root@{node} "
-                f"\"mysql -u{MYSQL_USER} -p{MYSQL_PASS} -N -e "
-                f"'SHOW DATABASES' | grep -Ev '^(mysql|sys|performance_schema|information_schema)$' "
-                f"| xargs -I{{}} mysql -u{MYSQL_USER} -p{MYSQL_PASS} -e 'DROP DATABASE IF EXISTS {{}};'\""
-            )
-            subprocess.run(wipe_cmd, shell=True, check=True)
-            print(f"[INFO] User databases wiped on {node}")
-
-            # 2. Stream dump directly from source to target (no temp file)
-            dump_stream_cmd = (
-                f"ssh root@{source_node} "
-                f"\"mysqldump --all-databases -h {source_node} -u{MYSQL_USER} -p{MYSQL_PASS} "
-                f"--single-transaction --routines --triggers --replace "
-                f"--flush-privileges --hex-blob --default-character-set=utf8 "
-                f"--set-gtid-purged=OFF --insert-ignore\" "
-                f"| ssh root@{node} "
-                f"\"mysql -u{MYSQL_USER} -p{MYSQL_PASS}\""
-            )
-            subprocess.run(dump_stream_cmd, shell=True, check=True)
-            print(f"[INFO] Dump streamed and imported directly to {node}")
-
-            while True:
-                current_master = get_master_from_proxysql()
-                if current_master is None:
-                    print("Please check if proxysql is working and configured correctly.")
-                    time.sleep(SLEEP_INTERVAL)
-                else:
-                    res = attempt_repoint(node, current_master)
-                    if res == 0:
-                        print(f"[INFO] {node} now pointing to master {current_master}")
-                        rebuild_success = True
-                    else:
-                        print(f"[ERROR] Issue with {node}. Setting to dead.")
-                        with STATE_LOCK:
-                            NODE_STATUS[node] = "dead"
-                            while not set_proxysql_node_status(node, NODE_STATUS[node]):
-                                print(f"Could not update {node} status in ProxySQL. Retrying.")
-                                time.sleep(SMALL_INTERVAL)
-                            NODE_GTID[node] = ""                        
-                    break
-        except Exception as e:
-            print(f"[ERROR] Rebuild failed for {node}: {e}")
-        finally:
-            with STATE_LOCK:
-                if NODE_STATUS.get(node) == "rebuilding":
-                    NODE_STATUS[node] = "alive" if is_alive(node) and rebuild_success else "dead"
-                    while not set_proxysql_node_status(node, NODE_STATUS[node]):
-                        print(f"Could not update {node} status in ProxySQL. Retrying.")
-                        time.sleep(SMALL_INTERVAL)
-                    NODE_GTID[node] = get_gtid(node) if NODE_STATUS.get(node) == "alive" else ""
-
-    threading.Thread(target=job, daemon=True).start()
-
-def attempt_repoint(node, master):
-    last_res = 1
-    for i in range(REPOINT_RETRIES):
-        last_res = _point_to_master(node, master)
-        if last_res == 0:
-            break
-        print(f"[WARN] Failed to point {node} to {master}. Retrying... ({i+1}/{REPOINT_RETRIES})")
-        time.sleep(REPOINT_RETRY_DELAY)
-    return last_res
 
 # ---------------- MAIN ----------------
 print("[INFO] Initializing script...")
@@ -428,7 +380,7 @@ for node in NODE_LIST:
         if get_node_master(node) != MASTER:
             print(f"[INFO] Redirecting {node} to point to {MASTER}")
             if attempt_repoint(node, MASTER) == -1:
-                rebuild_node(node)
+                mark_as_broken(node)
 
 while True:
     print(f"--- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
@@ -468,7 +420,7 @@ while True:
                 NODE_STATUS[node] = "dead"
                 NODE_GTID[node] = ""
     for node in need_rebuild:
-        rebuild_node(node)
+        mark_as_broken(node)
 
     master_retry_count = 0
     while(master_retry_count < MASTER_ALIVE_RETIRES):
@@ -494,8 +446,9 @@ while True:
                     with STATE_LOCK:
                         is_node_alive = NODE_STATUS.get(node) == "alive"
                     if node != MASTER and is_alive(MASTER) and is_node_alive and attempt_repoint(node, MASTER) == -1:
-                        rebuild_node(node)
+                        mark_as_broken(node)
             else:
                 print("[ERROR] Failover failed: Could not detect a new master.")
+
 
     time.sleep(SLEEP_INTERVAL)

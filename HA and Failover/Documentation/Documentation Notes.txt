@@ -1,7 +1,7 @@
 Pre-requisites and tips:
 
 HA.py must be run locally on the same node as ProxySQL. Combined they form Middleware Node.
-MySQL 5.7 and percona-xtrabackup-24 must be installed on all nodes except for Middleware Node.
+MySQL 5.7 must be installed on all nodes except for Middleware Node.
 ProxySQL 2.6.2, Python 3.10, mysql-connector-python==9.4.0 via PIP must be installed on Middleware Node.
 GTIDs must be enabled on all MySQL nodes.
 If HA.py ever run, crashes or restarted. Make sure all nodes are behaving correctly before re-run (All nodes have read-writes workings, replicas are correctly replicating master, ProxySQL is working and reflects the correct topology).
@@ -39,7 +39,7 @@ Monitor User must be on all nodes and have the following permissions: REPLICATIO
 Example:
 GRANT REPLICATION CLIENT, REPLICATION SLAVE, PROCESS ON *.* TO '<Monitor Username>'@'%';
 
-App User will be the user the clients use to interact with proxysql node on port 6033
+App User will be the user the clients use to interact with proxysql node on port 3306
 App User must be on all nodes and have the following permissions: SELECT, INSERT, UPDATE, DELETE
 Example:
 GRANT SELECT, INSERT, UPDATE, DELETE ON *.* TO '<App Username>@'%' WITH GRANT OPTION;
@@ -55,7 +55,7 @@ LOAD MYSQL SERVERS TO RUNTIME;
 SAVE MYSQL SERVERS TO DISK;
 
 INSERT INTO mysql_users(username, password, default_hostgroup, transaction_persistent) VALUES ('<App Username>', '<App User Password>', 10, 1);
-INSERT INTO mysql_users (username, password, default_hostgroup) VALUES ('<Monitor Username>', '<Monitor User Password>', 0);
+INSERT INTO mysql_users(username, password, default_hostgroup) VALUES ('<Monitor Username>', '<Monitor User Password>', 0);
 LOAD MYSQL USERS TO RUNTIME;
 SAVE MYSQL USERS TO DISK;
 
@@ -70,6 +70,7 @@ UPDATE global_variables
 SET variable_value='<Monitor Password>'
 WHERE variable_name='mysql-monitor_password';
 
+SET mysql-port=3306;
 SET mysql-monitor_ping_interval=1000;
 SET mysql-monitor_connect_interval=1000;
 SET mysql-monitor_slave_lag_when_null=5;
@@ -79,16 +80,11 @@ SAVE ADMIN VARIABLES TO DISK;
 LOAD MYSQL VARIABLES TO RUNTIME;
 SAVE MYSQL VARIABLES TO DISK;
 
-Example command to get percona-xtrabackup-24 (to be installed on each MySQL node):
-apt-get update
-apt install -y wget lsb-release curl
-wget https://repo.percona.com/apt/percona-release_latest.generic_all.deb
-dpkg -i percona-release_latest.generic_all.deb
-percona-release enable pxb-24 release
-apt-get update
-apt-get install -y percona-xtrabackup-24
-xtrabackup --version
-
 To get started:
 After all pre-requisites are met, and nodes are set up (Healthy MySQL topology with GTID replication, ProxySQL setup with Python, users with correct privileges and SSH configured), setup HA.py with the correct variables via any test editor. Tip: PROXYSQL_NODE and NODE_LIST must be populated with Node IPs. Run the script when ready.
 
+
+
+TODO:
+**if proxysql local goes down, pause HA.py** i think this already happens in a way.
+add a way to stop the script safely.

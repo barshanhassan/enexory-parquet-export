@@ -3,8 +3,8 @@ import time
 import subprocess
 
 SLEEP_INTERVAL = 4
-node = 'mysql-replica2'
-source_node = 'mysql-replica1'
+node = 'mysql-replica1'
+source_node = 'mysql-master'
 master = 'mysql-master'
 MYSQL_USER = "repl"
 MYSQL_PASS = "replpass"
@@ -59,26 +59,17 @@ cursor.execute("RESET MASTER;")
 conn.commit()
 conn.close()
 
-# 1. Drop only user (non-system) databases on target
-wipe_cmd = (
+dump_restore_cmd = (
     f"ssh root@{node} "
-    f"\"mysql -u{MYSQL_USER} -p{MYSQL_PASS} -N -e "
-    f"'SHOW DATABASES' | grep -Ev '^(mysql|sys|performance_schema|information_schema)$' "
-    f"| xargs -I{{}} mysql -u{MYSQL_USER} -p{MYSQL_PASS} -e 'DROP DATABASE IF EXISTS {{}};'\""
-)
-subprocess.run(wipe_cmd, shell=True, check=True)
-print(f"[INFO] User databases wiped on {node}")
-
-# 2. Stream dump directly from source to target (no temp file)
-dump_stream_cmd = (
-    f"ssh root@{source_node} "
-    f"\"mysqldump --all-databases -h {source_node} -u{MYSQL_USER} -p{MYSQL_PASS} "
-    f"--single-transaction --routines --triggers --replace "
+    f"\"/usr/bin/mysqldump --all-databases --add-drop-database -h {source_node} -u{MYSQL_USER} -p{MYSQL_PASS} "
+    f"--single-transaction --routines --triggers "
     f"--flush-privileges --hex-blob --default-character-set=utf8 "
-    f"--set-gtid-purged=OFF --insert-ignore\" "
-    f"| ssh root@{node} "
-    f"\"mysql -u{MYSQL_USER} -p{MYSQL_PASS}\""
+    f"--set-gtid-purged=OFF "
+    f"| /usr/bin/mysql -u{MYSQL_USER} -p{MYSQL_PASS}\""
 )
-subprocess.run(dump_stream_cmd, shell=True, check=True)
+print("[INFO] Dumping directly from source to target (executed on target)...")
+subprocess.run(dump_restore_cmd, shell=True, check=True)
+
+print(f"[SUCCESS] Successfuly restored {node}.")
 
 print(_point_to_master(node, master))
