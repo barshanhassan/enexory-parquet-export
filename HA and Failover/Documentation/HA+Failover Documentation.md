@@ -113,7 +113,7 @@ GRANT ALL PRIVILEGES ON *.* TO '<Replica Username>'@'%' WITH GRANT OPTION;FLUSH 
 To setup ProxySQL and `orchestrator.py`, follow these steps:
 1. On a different node from the MySQL nodes, install `ProxySQL 2.6.2`, `Python 3.10` and `python3.10-venv`. Make sure this node does not have MySQL server running on it and do not run it in the future either.
 2. Setup a virtual python environment using `python -m venv .venv`
-3. Activate the environment and install MySQL connector for python by running `pip install mysql-connector-python==9.4.0`
+3. Activate the environment and install these requirements for python by running `pip install mysql-connector-python==9.4.0 keyboard==0.13.5`
 4. Move the `orchestrator.py` script to the node.
 5. Set up a monitor user on the master MySQL node (replication should copy them) with the following privileges: REPLICATION CLIENT, REPLICATION SLAVE, PROCESS. Example command is provided.
 6. Set up an app user on the master MySQL node (replication should copy them) with the following privileges: SELECT, INSERT, UPDATE, DELETE. You can remove or grant additional privileges. Example command is provided.
