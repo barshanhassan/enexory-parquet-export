@@ -531,14 +531,14 @@ def set_replication_source(master: str, selected_node: str) -> tuple[bool, int]:
 		log_event(LOG_INFO_CODE, f"Node {selected_node} is not healthy or correct. Intervening to re-point.")
 
 		cursor.execute("STOP SLAVE;")
-		change_master_query = f"""
+		change_master_query = """
 			CHANGE MASTER TO
-			  MASTER_HOST='{master}',
-			  MASTER_USER='{MYSQL_USER}',
-			  MASTER_PASSWORD='{MYSQL_PASS}',
-			  MASTER_AUTO_POSITION=1;
+			MASTER_HOST=%s,
+			MASTER_USER=%s,
+			MASTER_PASSWORD=%s,
+			MASTER_AUTO_POSITION=1
 		"""
-		cursor.execute(change_master_query)
+		cursor.execute(change_master_query, (master, MYSQL_USER, MYSQL_PASS))
 		cursor.execute("START SLAVE;")
 
 		time.sleep(2) # Give replication a moment to start and report status
@@ -638,7 +638,7 @@ def _init_custom_db() -> bool:
 		conn.close()
 
 @keeptrying(interval=3, max_retry_count=3)
-def get_custom_value_from_proxysql_db(variable: str) -> tuple[bool, Any]:
+def get_custom_value_from_proxysql_db(variable: str, retry: bool = True) -> tuple[bool, Any]:
 	"""Retrieves a persistent variable from the custom table in ProxySQL.
 
 	If the table does not exist, it will attempt to initialize it once and
@@ -661,8 +661,8 @@ def get_custom_value_from_proxysql_db(variable: str) -> tuple[bool, Any]:
 		return True, result[0] if result else None
 	except Exception:
 		# Table might not exist yet, try to create it and retry once.
-		if _init_custom_db():
-			return get_custom_value_from_proxysql_db(variable)
+		if retry and _init_custom_db():
+			return get_custom_value_from_proxysql_db(variable, retry=False)
 		return False, None
 	finally:
 		conn.close()
@@ -902,6 +902,18 @@ def send_email(email_text: str) -> None:
 	api_key = os.environ.get("BREVO_API_KEY")
 	sender_email = os.environ.get("SENDER_EMAIL")
 
+	parts = email_text.split('\n\n', 1)
+	if len(parts) != 2:
+		log_event(LOG_ERROR_CODE, "Email text format invalid")
+		# Fallback to console if format is invalid
+		print("--- EMAIL START ---")
+		print(email_text)
+		print("--- EMAIL END ---")
+		return
+
+	subject = parts[0].replace("Subject: ", "").strip()
+	html_content = parts[1]
+
 	if not api_key or not sender_email:
 		log_event(LOG_WARN_CODE, "BREVO_API_KEY or SENDER_EMAIL not set. Printing email to console.")
 		print("--- EMAIL START ---")
@@ -913,10 +925,6 @@ def send_email(email_text: str) -> None:
 	configuration = sib_api_v3_sdk.Configuration()
 	configuration.api_key['api-key'] = api_key
 	api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
-
-	# Parse the subject and HTML content from the input string
-	subject, _, html_content = email_text.partition('\n\n')
-	subject = subject.replace("Subject: ", "")
 
 	sender = sib_api_v3_sdk.SendSmtpEmailSender(name="Orchestrator Alert", email=sender_email)
 	to = [sib_api_v3_sdk.SendSmtpEmailTo(email=email)]
@@ -930,9 +938,12 @@ def send_email(email_text: str) -> None:
 
 	try:
 		api_response = api_instance.send_transac_email(send_smtp_email)
-		log_event(LOG_INFO_CODE, f"Successfully sent email notification to {email}. Message ID: {api_response.message_id}")
+		msg_id = getattr(api_response, 'message_id', 'unknown')
+		log_event(LOG_INFO_CODE, f"Successfully sent email notification to {email}. Message ID: {msg_id}")
 	except ApiException as e:
 		log_event(LOG_ERROR_CODE, f"An exception occurred while trying to send email via Brevo: {e.body}")
+	except Exception as e:
+		log_event(LOG_ERROR_CODE, f"Unexpected error sending email: {e}")
 
 #-------------------------------------------------------------------------------
 
