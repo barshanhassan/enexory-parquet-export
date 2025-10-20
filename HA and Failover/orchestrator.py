@@ -38,6 +38,8 @@ CUSTOM_DB: str = "custom_db"
 CUSTOM_TABLE: str = "custom_table"
 LOCK_VARIABLE: str = "lock_variable"
 CONNECTION_TIMEOUT = 5
+ONE_GB: int = 1073741824  # 1024 * 1024 * 1024 bytes
+TEN_MB: int = 10485760    # 10 * 1024 * 1024 bytes
 
 LOG_INFO_CODE:int = 0
 LOG_WARN_CODE:int = 1
@@ -138,9 +140,25 @@ def log_event(log_code: int, log_text: str) -> None:
 		log_text (str): The message text to log.
 
 	Behavior:
+		- Before logging, it checks if the log file size has reached 1 GB.
+		  If it has, it removes the oldest 10 MB of data from the beginning of the file.
 		- Prints a timestamped, color-coded message to the console.
 		- Appends the same message (without color) to the log file defined by `log_file`.
 	"""
+	try:
+		if log_file.exists() and log_file.stat().st_size >= ONE_GB:
+			# Log to console that truncation is happening
+			print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {COLOR_YELLOW}[WARN]{COLOR_RESET} Log file has reached 1GB, truncating the oldest 10MB.")
+
+			with open(log_file, "rb+") as f:
+				f.seek(TEN_MB)
+				remaining_data = f.read()
+				f.seek(0)
+				f.write(remaining_data)
+				f.truncate()
+	except Exception as e:
+		print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {COLOR_RED}[ERROR]{COLOR_RESET} Could not truncate log file: {e}")
+
 	current_datetime: str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 	if log_code == LOG_INFO_CODE:
