@@ -35,7 +35,7 @@ usage() {
     echo "  --replica-user <user>      -u <user>      (Optional) The username for the local (replica) database server. Defaults to 'root'."
     echo "  --replica-pass <password>  -p <password>  (Required) The password for the local (replica) user."
     echo "  --help                       -h           Display this help message."
-    echo "Very important: Use single quotation marks to enclose your arguements to this scripts to avoid problems with special characters.
+    echo "Very important: Use single quotation marks to enclose your arguements to this scripts to avoid problems with special characters."
     exit 1
 }
 
