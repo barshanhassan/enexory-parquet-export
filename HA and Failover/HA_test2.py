@@ -8,7 +8,7 @@ import sys
 import subprocess
 
 # ---------------- CONFIG ----------------
-PROXYSQL_NODE = "127.0.0.1"
+PROXYSQL_NODE = "proxysql"
 PROXYSQL_PORT = 3306
 APP_USER = "appuser"
 APP_PASS = "proxypass"
@@ -30,7 +30,7 @@ P_UPDATE = 0.4
 P_DELETE = 0.2
 
 STATE_LOCK = threading.Lock()
-STOP_FLAP = False
+STOP_FLAP = True
 
 # in-memory table tracking: {id: value}
 EXPECTED_TABLE = {}

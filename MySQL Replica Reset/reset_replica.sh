@@ -139,7 +139,7 @@ fi
 echo -e "\n${GREEN}>>> Step 1: Wiping replication state and databases...${NC}"
 mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "STOP SLAVE; RESET SLAVE ALL;"
 
-DB_LIST=$(mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -ANe "SELECT GROUP_CONCAT('DROP DATABASE IF EXISTS \`', schema_name, '\`') FROM information_schema.schemata WHERE schema_name NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys');")
+DB_LIST=$(mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -ANe "SELECT GROUP_CONCAT('DROP DATABASE IF EXISTS \`', schema_name, '\`' SEPARATOR ';') FROM information_schema.schemata WHERE schema_name NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys');")
 if [ -n "$DB_LIST" ] && [ "$DB_LIST" != "NULL" ]; then
     mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "${DB_LIST}"; echo "Target databases dropped.";
 else

@@ -178,10 +178,10 @@ FLUSH PRIVILEGES;
 "
 
 docker exec -it proxysql mysql -uadmin -padmin -h127.0.0.1 -P6032 -e "
-INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (10, 'mysql-master', 3306, 0);
-INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, 'mysql-master', 3306, 5);
-INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, 'mysql-replica1', 3306, 5);
-INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, 'mysql-replica2', 3306, 5);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (10, '172.18.0.2', 3306, 0);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, '172.18.0.2', 3306, 5);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, '172.18.0.3', 3306, 5);
+INSERT INTO mysql_servers(hostgroup_id, hostname, port, max_replication_lag) VALUES (20, '172.18.0.4', 3306, 5);
 LOAD MYSQL SERVERS TO RUNTIME;
 SAVE MYSQL SERVERS TO DISK;
 
@@ -204,7 +204,7 @@ UPDATE global_variables
 SET variable_value='$MON_PASS'
 WHERE variable_name='mysql-monitor_password';
 
-SET mysql-port=3306;
+UPDATE global_variables SET variable_value='0.0.0.0:3306' WHERE variable_name='mysql-interfaces';
 SET mysql-monitor_ping_interval=1000;
 SET mysql-monitor_connect_interval=1000;
 SET mysql-monitor_slave_lag_when_null=5;
@@ -280,8 +280,13 @@ docker exec -it sc bash -c '
 '
 
 docker exec -it sc bash -c '
-  nano /root/HA.py
+  nano /root/orchestrator.py
 '
+
+docker exec -it sc bash -c '
+  nano /root/t.py
+'
+
 # ----------------------------- TESTING HA.py -----------------------------
 
 docker exec -i mysql-master mysql -uroot -p$MYSQL_ROOT_PW -D testdb -e "
@@ -295,24 +300,14 @@ CREATE TABLE IF NOT EXISTS test (
     x INT
 );"
 
+# cd /root
+# source .venv/bin/activate
+# python orchestrator.py --mysql-user 'repl' --mysql-password 'replpass' --proxysql-admin 'admin2' --proxysql-pass 'admin2' --proxysql-node '172.18.0.5' --email-to 'danielsarfrazextraacc@gmail.com'
+# python t.py
+
 # docker network disconnect mysql-net mysql-master
 # docker network connect mysql-net mysql-master
 # docker network disconnect mysql-net mysql-replica1
 # docker network connect mysql-net mysql-replica1
 # docker network disconnect mysql-net mysql-replica2
 # docker network connect mysql-net mysql-replica2
-
-cd ~/mysql-test/
-
-source .venv/bin/activate
-
-pip install mysql-connector-python==9.4.0
-
-rm test2.py
-nano test2.py
-
-rm output.log
-nohup docker exec -i sc /root/.venv/bin/python3.10 -u /root/HA.py > output.log 2>&1 &
-# 1134804
-python test2.py
-tail -f output_HA.log
