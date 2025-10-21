@@ -30,12 +30,9 @@ NC='\033[0m' # No Color
 usage() {
     echo "Usage: $0 [options]"
     echo ""
-    echo "This script initializes a new target server as a replica using a pure GTID workflow."
-    echo "It dumps from a source, catches up using GTID auto-positioning, and includes an"
-    echo "algorithm to automatically resolve duplicate key errors (1062) by deleting"
-    echo "conflicting rows on the target."
-    echo ""
-    echo -e "${RED}WARNING: The auto-fix mechanism is destructive. It assumes the source/primary is always correct.${NC}"
+    echo "This script initializes a new target server as a replica."
+    echo "It dumps from a source replica using binary log positions for catch-up,"
+    echo "and then switches to the final primary using GTID auto-positioning."
     echo ""
     echo "Options:"
     echo "  --primary-host <host>          -H <host>      (Required) The hostname of the final Primary server."
@@ -55,7 +52,6 @@ usage() {
 }
 
 # --- Parse Command-Line Arguments ---
-# (Parsing logic remains the same as previous scripts)
 PARSED_ARGS=$(getopt -o H:U:P:t:k:S:s:w:h --long primary-host:,primary-user:,primary-pass:,target-user:,target-pass:,source-replica-host:,source-replica-user:,source-replica-pass:,help -n "$0" -- "$@")
 if [ $? -ne 0 ]; then
     usage
@@ -82,14 +78,12 @@ if [[ -z "${PRIMARY_HOST}" || -z "${PRIMARY_USER}" || -z "${PRIMARY_PASS}" || -z
     echo -e "${RED}Error: Missing required arguments.${NC}\n"; usage;
 fi
 
-# --- ADVANCED Function to wait for slave and auto-fix duplicate key errors ---
-wait_and_fix_slave_catchup() {
+# --- Function to wait for slave catch-up (no fixing) ---
+wait_for_binlog_catchup() {
     echo -e "\n${BLUE}>>> Waiting for target to catch up... (Timeout: ${CATCHUP_TIMEOUT_SECONDS}s)${NC}"
-    echo -e "${YELLOW}>>> Auto-fix for duplicate key errors (1062) is ENABLED.${NC}"
     SECONDS=0
     
     while true; do
-        # Fetch slave status once per loop iteration
         SLAVE_STATUS=$(mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "SHOW SLAVE STATUS\G" 2>/dev/null || true)
 
         if [[ -z "${SLAVE_STATUS}" ]]; then
@@ -98,87 +92,19 @@ wait_and_fix_slave_catchup() {
             continue
         fi
 
-        # Parse all necessary fields from the status
         IO_RUNNING=$(echo "${SLAVE_STATUS}" | grep 'Slave_IO_Running:' | awk '{print $2}')
         SQL_RUNNING=$(echo "${SLAVE_STATUS}" | grep 'Slave_SQL_Running:' | awk '{print $2}')
         LAG=$(echo "${SLAVE_STATUS}" | grep 'Seconds_Behind_Master:' | awk '{print $2}')
-        LAST_ERRNO=$(echo "${SLAVE_STATUS}" | grep 'Last_Errno:' | awk '{print $2}')
         
-        # Check for success condition first
         if [[ "${IO_RUNNING}" == "Yes" && "${SQL_RUNNING}" == "Yes" && ("${LAG}" == "0" || "${LAG}" == "NULL") ]]; then
             echo -e "${GREEN}Target has successfully caught up with source! Lag is 0.${NC}"
             break
         fi
         
-        # Check for IO thread failure
-        if [[ "${IO_RUNNING}" != "Yes" ]]; then
-            echo -e "${RED}Error: Slave IO thread has stopped. Cannot continue.${NC}"; echo "${SLAVE_STATUS}"; exit 1;
-        fi
-
-        # Handle SQL thread errors
-        if [[ "${SQL_RUNNING}" == "No" ]]; then
-            if [[ "${LAST_ERRNO}" == "1062" ]]; then
-                LAST_ERROR=$(echo "${SLAVE_STATUS}" | grep 'Last_SQL_Error:' | sed 's/Last_SQL_Error: //')
-                echo -e "${YELLOW}Warning: Detected duplicate key error (1062). Attempting to auto-fix...${NC}"
-                echo "  - Error: ${LAST_ERROR}"
-
-                # --- BEGIN ROBUST PARSING ---
-                TABLE_NAME=$(echo "$LAST_ERROR" | sed -n "s/.*for table '\\([^']*\\)'.*/\1/p")
-                DB_NAME=$(echo "$TABLE_NAME" | cut -d'.' -f1 | tr -d '`')
-                TBL_ONLY_NAME=$(echo "$TABLE_NAME" | cut -d'.' -f2 | tr -d '`')
-
-                # Get the raw string of values (e.g., "123,'abc'")
-                PK_VALUES_STRING=$(echo "$LAST_ERROR" | sed -n "s/.*Duplicate entry '\([^']*\)' for key.*/\1/p")
-                
-                if [[ -z "$TBL_ONLY_NAME" || -z "$PK_VALUES_STRING" ]]; then
-                    echo -e "${RED}Error: Could not parse table name or PK values from error message. Cannot auto-fix.${NC}"; exit 1;
-                fi
-
-                # Discover the primary key columns and their types from the database itself
-                PK_INFO_QUERY="SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '${DB_NAME}' AND TABLE_NAME = '${TBL_ONLY_NAME}' AND COLUMN_KEY = 'PRI' ORDER BY ORDINAL_POSITION;"
-                
-                # Store the discovered columns and types
-                PK_COLUMNS=()
-                PK_TYPES=()
-                while read -r col type; do
-                    PK_COLUMNS+=("$col")
-                    PK_TYPES+=("$type")
-                done < <(mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -N -e "${PK_INFO_QUERY}")
-                
-                # Split the raw values string into an array, using '-' as the delimiter
-                IFS='-' read -r -a PK_VALUES <<< "$PK_VALUES_STRING"
-
-                # Dynamically build the WHERE clause
-                WHERE_CLAUSE=""
-                for i in "${!PK_COLUMNS[@]}"; do
-                    col_name="${PK_COLUMNS[$i]}"
-                    col_type="${PK_TYPES[$i]}"
-                    col_val="${PK_VALUES[$i]}"
-
-                    # Add AND if this is not the first condition
-                    if [[ -n "$WHERE_CLAUSE" ]]; then
-                        WHERE_CLAUSE+=" AND "
-                    fi
-
-                    # Quote strings, but not numbers
-                    if [[ "$col_type" =~ (char|varchar|text|date|time|enum|set) ]]; then
-                        WHERE_CLAUSE+="\`${col_name}\` = '${col_val}'"
-                    else
-                        WHERE_CLAUSE+="\`${col_name}\` = ${col_val}"
-                    fi
-                done
-                # --- END ROBUST PARSING ---
-
-                DELETE_CMD="DELETE FROM \`${DB_NAME}\`.\`${TBL_ONLY_NAME}\` WHERE ${WHERE_CLAUSE};"
-
-                echo "  - Attempting to execute: ${DELETE_CMD}"
-                mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "${DELETE_CMD}"
-                echo "  - Conflicting row deleted. Restarting slave..."
-                mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "START SLAVE;"
-                sleep 5 # Give it a moment to reconnect
-            else
-                echo -e "${RED}Error: Replication SQL thread has stopped with an unhandled error (${LAST_ERRNO}).${NC}"; echo "${SLAVE_STATUS}"; exit 1;
-            fi
+        if [[ "${IO_RUNNING}" != "Yes" || "${SQL_RUNNING}" != "Yes" ]]; then
+            echo -e "${RED}Error: Replication has stopped. Please check the slave status below.${NC}"
+            echo "${SLAVE_STATUS}"
+            exit 1
         fi
 
         echo "Current lag: ${LAG}. Waiting..."
@@ -196,7 +122,6 @@ DUMP_USER=${SOURCE_REPLICA_USER:-${PRIMARY_USER}}
 DUMP_PASS=${SOURCE_REPLICA_PASS:-${PRIMARY_PASS}}
 
 # --- SAFETY WARNING AND CONFIRMATION ---
-# (Warning remains the same)
 echo -e "${RED}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! WARNING !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 echo -e "${RED}This script will PERMANENTLY DELETE all user databases on the TARGET MySQL server (localhost)."
 echo -e "${YELLOW}You are about to wipe the target database and re-sync it according to this plan:${NC}"
@@ -221,7 +146,10 @@ else
     echo "No user databases to drop on target.";
 fi
 
-echo -e "\n${GREEN}>>> Step 2: Dumping databases and GTID history from source (${DUMP_HOST})...${NC}"
+mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "RESET MASTER;"
+
+echo -e "\n${GREEN}>>> Step 2: Dumping databases from source (${DUMP_HOST})...${NC}"
+# --master-data=2 records the binlog position in the dump file
 mysqldump --all-databases \
     -h "${DUMP_HOST}" \
     -u "${DUMP_USER}" \
@@ -233,32 +161,29 @@ mysqldump --all-databases \
     --flush-privileges \
     --hex-blob \
     --default-character-set=utf8 \
-    --set-gtid-purged=OFF > "${DUMP_FILE}"
+    --set-gtid-purged=ON > "${DUMP_FILE}"
 echo "Dump complete. File created: ${DUMP_FILE}"
 
-echo -e "\n${GREEN}>>> Step 3: Importing data and GTID history...${NC}"
+echo -e "\n${GREEN}>>> Step 3: Importing data...${NC}"
 mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" < "${DUMP_FILE}"
 echo "Import complete."
 
-# --- Conditional Catch-Up Logic ---
-if [[ -n "${SOURCE_REPLICA_HOST}" ]]; then
-    echo -e "\n${BLUE}>>> Step 4: Catch-up phase initiated (GTID Auto-Positioning).${NC}"
-    
-    CHANGE_TO_SOURCE_CMD="CHANGE MASTER TO \
-        MASTER_HOST='${DUMP_HOST}', \
-        MASTER_USER='${DUMP_USER}', \
-        MASTER_PASSWORD='${DUMP_PASS}', \
-        MASTER_AUTO_POSITION=1;"
-    mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "${CHANGE_TO_SOURCE_CMD}"
-    
-    echo "Starting replication from source (${DUMP_HOST})..."
-    mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "START SLAVE;"
-    
-    wait_and_fix_slave_catchup
+echo -e "\n${BLUE}>>> Step 4: Catch-up phase initiated (Binary Log Position).${NC}"
 
-    echo "Stopping slave temporarily before switching to the primary."
-    mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "STOP SLAVE;"
-fi
+CHANGE_TO_SOURCE_CMD="CHANGE MASTER TO \
+    MASTER_HOST='${DUMP_HOST}', \
+    MASTER_USER='${DUMP_USER}', \
+    MASTER_PASSWORD='${DUMP_PASS}', \
+    MASTER_AUTO_POSITION=1;"
+mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "${CHANGE_TO_SOURCE_CMD}"
+
+echo "Starting replication from source (${DUMP_HOST})..."
+mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "START SLAVE;"
+
+wait_for_binlog_catchup
+
+echo "Stopping slave temporarily before switching to the primary."
+mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "STOP SLAVE;"
 
 echo -e "\n${GREEN}>>> Step 5: Configuring final replication to the primary (${PRIMARY_HOST}) with GTID...${NC}"
 CHANGE_TO_PRIMARY_CMD="CHANGE MASTER TO \
@@ -271,10 +196,7 @@ mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "${CHANGE_TO_PRIMARY_CMD}"
 echo "Starting replication from primary..."
 mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "START SLAVE;"
 
-echo -e "\n${GREEN}>>> Step 6: Final catch-up from primary (${PRIMARY_HOST}) with auto-fixing...${NC}"
-wait_and_fix_slave_catchup
-
-echo -e "\n${GREEN}>>> Step 7: Checking final slave status on target...${NC}"
+echo -e "\n${GREEN}>>> Step 6: Checking final slave status on target...${NC}"
 sleep 5
 mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "SHOW SLAVE STATUS\G"
 
