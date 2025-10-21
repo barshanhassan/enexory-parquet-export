@@ -1,0 +1,47 @@
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(1, 1);"
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(2, 1);"
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(3, 1);"
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(4, 1);"
+docker exec -i mysql-replica2 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(5, 2);"
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(5, 1);"
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(6, 1);"
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(7, 1);"
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(8, 1);"
+
+docker exec -i mysql-replica1 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "STOP SLAVE;"
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(9, 1);"
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "INSERT INTO testdb.test VALUES(10, 1);"
+docker exec -i mysql-replica1 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SELECT * from testdb.test;"
+
+
+
+docker exec -it mysql-replica2 bash
+
+nano reset_replica.sh
+./reset_replica.sh -h
+./reset_replica.sh --primary-host '172.18.0.2' --primary-user 'repl' --primary-pass 'replpass' --target-user 'repl' --target-pass 'replpass' --source-replica-host '172.18.0.3' --source-replica-user 'repl' --source-replica-pass 'replpass' 
+
+
+#10
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SELECT * from testdb.test;"
+
+#8
+docker exec -i mysql-replica1 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SELECT * from testdb.test;"
+
+#10
+docker exec -i mysql-replica2 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SELECT * from testdb.test;"
+
+docker exec -i mysql-replica1 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "START SLAVE;"
+
+#10
+docker exec -i mysql-replica1 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SELECT * from testdb.test;"
+
+
+#Nothing
+docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SHOW SLAVE STATUS\G"
+
+#Working
+docker exec -i mysql-replica1 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SHOW SLAVE STATUS\G"
+
+#Working
+docker exec -i mysql-replica2 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SHOW SLAVE STATUS\G"
