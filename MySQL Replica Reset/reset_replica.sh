@@ -97,6 +97,34 @@ if [[ -n "${SOURCE_REPLICA_HOST}" && ("${SOURCE_REPLICA_HOST}" == "${PRIMARY_HOS
     exit 1
 fi
 
+check_mysql_credentials() {
+    local host="$1"
+    local user="$2"
+    local pass="$3"
+    local server_type="$4" # A descriptive name like "Primary" or "Target"
+
+    echo -e "${BLUE}>>> Verifying credentials for ${server_type} server (${host})...${NC}"
+
+    # Attempt to connect and run a simple query.
+    # The output is redirected to /dev/null to keep the script clean.
+    # We rely on the exit code of the mysql command to determine success.
+    if ! mysql -h "${host}" -u "${user}" -p"${pass}" -e "SELECT 1" >/dev/null 2>&1; then
+        echo -e "${RED}Error: Failed to connect to the ${server_type} server (${host}) with the provided credentials.${NC}"
+        echo -e "${YELLOW}Please check the host, username, and password for the ${server_type} and try again.${NC}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}Successfully connected to the ${server_type} server.${NC}"
+}
+
+check_mysql_credentials "localhost" "${TARGET_USER}" "${TARGET_PASS}" "Target"
+check_mysql_credentials "${PRIMARY_HOST}" "${PRIMARY_USER}" "${PRIMARY_PASS}" "Primary"
+
+# If a source replica is specified, check its credentials as well.
+if [[ -n "${SOURCE_REPLICA_HOST}" ]]; then
+    check_mysql_credentials "${SOURCE_REPLICA_HOST}" "${SOURCE_REPLICA_USER}" "${SOURCE_REPLICA_PASS}" "Source Replica"
+fi
+
 # --- Function to wait for slave catch-up ---
 wait_for_catchup() {
     echo -e "\n${BLUE}>>> Waiting for replica to catch up with the primary...${NC}"
@@ -233,6 +261,7 @@ mysqldump --all-databases \
     -u "${DATA_SOURCE_USER}" \
     -p"${DATA_SOURCE_PASS}" \
     --single-transaction \
+    --insert-ignore \
     ${MYSQLDUMP_OPTIONS} \
     --routines \
     --triggers \
