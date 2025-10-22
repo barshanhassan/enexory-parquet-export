@@ -278,8 +278,8 @@ echo "Import complete."
 echo -e "\n${GREEN}>>> Step 4: Configuring replication to point to the final primary (${PRIMARY_HOST})...${NC}"
 CHANGE_MASTER_CMD=""
 if [ "$WORKFLOW_MODE" == "BINLOG" ]; then
-    MASTER_LOG_FILE=$(grep "CHANGE MASTER TO" "${DUMP_FILE}" | head -n1 | sed -n "s/.*MASTER_LOG_FILE='\([^']*\)'.*/\1/p")
-    MASTER_LOG_POS=$(grep "CHANGE MASTER TO" "${DUMP_FILE}" | head -n1 | sed -n "s/.*MASTER_LOG_POS=\([0-9]*\).*/\1/p")
+    MASTER_LOG_FILE=$(grep "CHANGE MASTER TO" "${DUMP_FILE}" | head -n1 | sed -n "s/.*MASTER_LOG_FILE='\([^']*\)'.*/\1/p") || true
+    MASTER_LOG_POS=$(grep "CHANGE MASTER TO" "${DUMP_FILE}" | head -n1 | sed -n "s/.*MASTER_LOG_POS=\([0-9]*\).*/\1/p") || true
     
     if [[ -z "$MASTER_LOG_FILE" || -z "$MASTER_LOG_POS" ]]; then
         echo -e "${RED}Error: Could not extract binlog position from dump file. Exiting.${NC}"
