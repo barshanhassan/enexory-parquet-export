@@ -8,7 +8,7 @@ BREVO_API_KEY: str = ""
 # Email that Brevo uses to send emails to EMAIL_TO
 SENDER_EMAIL: str = ""
 
-# The email address to send reports and alerts to.
+# One or more email addresses to send reports and alerts to.
 EMAIL_TO = [
     "",
 ]
