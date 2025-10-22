@@ -17,7 +17,6 @@ SOURCE_REPLICA_PASS=""
 TARGET_USER=""
 TARGET_PASS=""
 DUMP_FILE="db_target_dump_$(date +%F-%H%M%S).sql"
-CATCHUP_TIMEOUT_SECONDS=3600 # 1 hour timeout for replica catch-up
 
 # --- Style variables ---
 RED='\033[0;31m'
@@ -80,15 +79,14 @@ fi
 
 # --- Function to wait for slave catch-up (no fixing) ---
 wait_for_binlog_catchup() {
-    echo -e "\n${BLUE}>>> Waiting for target to catch up... (Timeout: ${CATCHUP_TIMEOUT_SECONDS}s)${NC}"
-    SECONDS=0
+    echo -e "\n${BLUE}>>> Waiting for target to catch up...${NC}"
     
     while true; do
         SLAVE_STATUS=$(mysql -u "${TARGET_USER}" -p"${TARGET_PASS}" -e "SHOW SLAVE STATUS\G" 2>/dev/null || true)
 
         if [[ -z "${SLAVE_STATUS}" ]]; then
-            echo -e "${YELLOW}Warning: Could not get slave status. Retrying in 10s...${NC}"
-            sleep 10
+            echo -e "${YELLOW}Warning: Could not get slave status. Retrying in 15s...${NC}"
+            sleep 15
             continue
         fi
 
@@ -96,23 +94,19 @@ wait_for_binlog_catchup() {
         SQL_RUNNING=$(echo "${SLAVE_STATUS}" | grep 'Slave_SQL_Running:' | awk '{print $2}')
         LAG=$(echo "${SLAVE_STATUS}" | grep 'Seconds_Behind_Master:' | awk '{print $2}')
         
-        if [[ "${IO_RUNNING}" == "Yes" && "${SQL_RUNNING}" == "Yes" && ("${LAG}" == "0" || "${LAG}" == "NULL") ]]; then
+        if [[ "${IO_RUNNING}" == "Yes" && "${SQL_RUNNING}" == "Yes" && "${LAG}" == "0" ]]; then
             echo -e "${GREEN}Target has successfully caught up with source! Lag is 0.${NC}"
             break
         fi
         
         if [[ "${IO_RUNNING}" != "Yes" || "${SQL_RUNNING}" != "Yes" ]]; then
-            echo -e "${RED}Error: Replication has stopped. Please check the slave status below.${NC}"
+            echo -e "${RED}Error: Replication has either stopped, or hasn't started yet fully. Retrying in 15s...${NC}"
             echo "${SLAVE_STATUS}"
-            exit 1
+            sleep 15
         fi
 
-        echo "Current lag: ${LAG}. Waiting..."
+        echo "Current lag: ${LAG}. Rechecking in 15s..."
         sleep 15
-
-        if (( SECONDS > CATCHUP_TIMEOUT_SECONDS )); then
-            echo -e "${RED}Error: Timed out waiting for target to catch up.${NC}"; exit 1;
-        fi
     done
 }
 
