@@ -11,7 +11,7 @@ node changes (e.g., goes offline, exceeds lag threshold, or replication stops).
 
 import time
 import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import mysql.connector
 import sib_api_v3_sdk # type: ignore
@@ -147,14 +147,17 @@ def generate_report_html(all_statuses: Dict[str, Dict[str, Any]], title: str, in
     </html>
     """
 
-def send_email(subject: str, html_content: str, recipient_email: str) -> None:
-    """Sends an email using the Brevo (Sendinblue) API."""
+def send_email(subject: str, html_content: str, recipient_emails: List[str]) -> None:
+    """Sends an email using the Brevo (Sendinblue) API to a list of recipients."""
     # Using cfg to get API key and sender email
     api_key = cfg.BREVO_API_KEY
     sender_email = cfg.SENDER_EMAIL
 
-    if not api_key or not sender_email or not recipient_email:
-        print(f"{COLOR_YELLOW}[WARN]{COLOR_RESET} Email settings are incomplete in config. Printing email to console instead.")
+    # Filter out any empty strings from the recipient list
+    valid_recipients = [email for email in recipient_emails if email]
+
+    if not api_key or not sender_email or not valid_recipients:
+        print(f"{COLOR_YELLOW}[WARN]{COLOR_RESET} Email settings are incomplete or no recipients are defined. Printing email to console instead.")
         print(f"--- EMAIL: {subject} ---\n{html_content}\n--- END EMAIL ---")
         return
 
@@ -163,7 +166,9 @@ def send_email(subject: str, html_content: str, recipient_email: str) -> None:
     api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
 
     sender = sib_api_v3_sdk.SendSmtpEmailSender(name="MySQL Monitor", email=sender_email)
-    to = [sib_api_v3_sdk.SendSmtpEmailTo(email=recipient_email)]
+    
+    # Create a list of recipient objects for the API call
+    to = [sib_api_v3_sdk.SendSmtpEmailTo(email=recipient) for recipient in valid_recipients]
 
     send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
         to=to, sender=sender, subject=subject, html_content=html_content
@@ -171,7 +176,7 @@ def send_email(subject: str, html_content: str, recipient_email: str) -> None:
 
     try:
         api_instance.send_transac_email(send_smtp_email)
-        print(f"{COLOR_GREEN}[INFO]{COLOR_RESET} Successfully sent email notification to {recipient_email}.")
+        print(f"{COLOR_GREEN}[INFO]{COLOR_RESET} Successfully sent email notification to {', '.join(valid_recipients)}.")
     except ApiException as e:
         print(f"{COLOR_RED}[ERROR]{COLOR_RESET} Exception when calling Brevo API: {e.body}")
 

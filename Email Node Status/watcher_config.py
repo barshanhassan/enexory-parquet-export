@@ -9,7 +9,9 @@ BREVO_API_KEY: str = ""
 SENDER_EMAIL: str = ""
 
 # The email address to send reports and alerts to.
-EMAIL_TO: str = ""
+EMAIL_TO = [
+    "",
+]
 
 # The hour of the day (0-23) to send the daily summary email. THE TIME IS IN UTC.
 EMAIL_SEND_HOUR: int = 14
