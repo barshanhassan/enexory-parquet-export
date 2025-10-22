@@ -29,12 +29,13 @@ docker cp /root/mysql-test/reset_replica.sh mysql-replica2:/reset_replica.sh
 docker exec -it mysql-replica2 bash
 chmod +x ./reset_replica.sh
 ./reset_replica.sh -h
+# ./reset_replica.sh --primary-host '172.18.0.2' --primary-user 'repl' --primary-pass 'replpass' --target-user 'repl' --target-pass 'replpass'
 ./reset_replica.sh --primary-host '172.18.0.2' --primary-user 'repl' --primary-pass 'replpass' --target-user 'repl' --target-pass 'replpass' --source-replica-host '172.18.0.3' --source-replica-user 'repl' --source-replica-pass 'replpass' 
 
 #10
 docker exec -i mysql-master mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SELECT * from testdb.test;"
 
-#8
+#8 or 10 (Binlogs with replica source)
 docker exec -i mysql-replica1 mysql -h127.0.0.1 -uroot -p$MYSQL_ROOT_PW -e "SELECT * from testdb.test;"
 
 #10
