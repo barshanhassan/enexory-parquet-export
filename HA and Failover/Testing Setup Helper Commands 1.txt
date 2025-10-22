@@ -302,7 +302,7 @@ CREATE TABLE IF NOT EXISTS test (
 
 # cd /root
 # source .venv/bin/activate
-# python orchestrator.py --mysql-user 'repl' --mysql-password 'replpass' --proxysql-admin 'admin2' --proxysql-pass 'admin2' --proxysql-node '172.18.0.5' --email-to 'danielsarfrazextraacc@gmail.com'
+# python orchestrator.py --mysql-user 'repl' --mysql-password 'replpass' --proxysql-admin 'admin2' --proxysql-pass 'admin2' --proxysql-node '172.18.0.5' --email-to ''
 # python t.py
 
 # docker network disconnect mysql-net mysql-master
