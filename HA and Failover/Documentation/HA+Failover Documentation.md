@@ -1,3 +1,6 @@
+# DO NOT USE, NOT FINALIZED
+
+
 This documentation provides a complete overview of the **High Availability (HA) and Failover solution**, including its architecture, setup, and operational behavior. It explains how the system maintains continuity during node failures, details the dataflow under normal and degraded conditions, and outlines how to integrate or roll out the solution in an existing cluster.
 
 You’ll find in this documentation:

@@ -1,3 +1,4 @@
+# For testing purposes only
 # docker build -t custom-mysql:5.7-debian-ram .
 
 FROM circleci/mysql:5.7-debian-ram

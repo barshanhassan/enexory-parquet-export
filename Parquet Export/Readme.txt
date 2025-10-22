@@ -1,3 +1,10 @@
+1. Create a baseline parquet export using: db_extrator.py
+2. For a daily sync with the database use: parse_binlogs.sh.
+NOTE: parse_binlogs.sh required a compiled consolidate.cpp program as a requirement.
+3. For a quick row count match with parquet export and db, to see if row counts are same or not, use: row_integrity.py
+
+-------------------------------------------------------------------------------------------------
+
 Prerequisites to compiling c++ program:
 sudo apt update
 sudo apt get g++
