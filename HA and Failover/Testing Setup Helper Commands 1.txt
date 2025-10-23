@@ -305,9 +305,9 @@ CREATE TABLE IF NOT EXISTS test (
 # python orchestrator.py --mysql-user 'repl' --mysql-password 'replpass' --proxysql-admin 'admin2' --proxysql-pass 'admin2' --proxysql-node '172.18.0.5' --email-to ''
 # python t.py
 
-# docker network disconnect mysql-net mysql-master
-# docker network connect mysql-net mysql-master
-# docker network disconnect mysql-net mysql-replica1
-# docker network connect mysql-net mysql-replica1
-# docker network disconnect mysql-net mysql-replica2
-# docker network connect mysql-net mysql-replica2
+docker network disconnect mysql-net mysql-master
+docker network connect --ip 172.18.0.2 mysql-net mysql-master
+docker network disconnect mysql-net mysql-replica1
+docker network connect --ip 172.18.0.3 mysql-net mysql-replica1
+docker network disconnect mysql-net mysql-replica2
+docker network connect --ip 172.18.0.4 mysql-net mysql-replica2
