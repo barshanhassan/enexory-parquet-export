@@ -45,6 +45,7 @@ def get_node_status(node: Dict[str, str]) -> Dict[str, Any]:
         "replication_status": None,
     }
 
+    conn = None
     try:
         conn = mysql.connector.connect(
             host=node['ip'],
@@ -61,11 +62,13 @@ def get_node_status(node: Dict[str, str]) -> Dict[str, Any]:
         slave_status = cursor.fetchone()
         status["replication_status"] = slave_status
 
-        conn.close()
     except mysql.connector.Error as err:
         print(f"{COLOR_YELLOW}[WARN]{COLOR_RESET} Could not connect to {node['ip']}: {err}")
     except Exception as e:
         print(f"{COLOR_RED}[ERROR]{COLOR_RESET} An unexpected error occurred while checking {node['ip']}: {e}")
+    finally:
+        if conn and conn.is_connected(): # Check that conn exists AND is open
+            conn.close()
 
     return status
 
@@ -292,11 +295,12 @@ def main():
 
             previous_node_statuses = current_statuses
             time.sleep(cfg.CHECK_INTERVAL_SECONDS)
-        except:
+        except KeyboardInterrupt:
+            print("\n--- Monitor stopped by user. ---")
+            break
+        except Exception as e:
+            print(f"An error occured: {e}")
             pass
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n--- Monitor stopped by user. ---")
+    main()
