@@ -29,22 +29,22 @@ CONNECTION_TIMEOUT: int = 15
 MASTER_NODE_IP: str = "172.18.0.2"
 
 # --- MySQL Node Definitions ---
-# Each node is a dictionary with 'ip', 'user', and 'pass'.
+# Each node (one master or any amount of replica) is a dictionary with 'ip', 'user', and 'pass'.
 NODES = [
     {
-        "ip": "172.18.0.2",  # Master IP
+        "ip": "172.18.0.2",
         "user": "repl",
         "pass": "replpass"
     },
     {
-        "ip": "172.18.0.3",  # Replica 1 IP
+        "ip": "172.18.0.3",
         "user": "repl",
         "pass": "replpass"
     },
     {
-        "ip": "172.18.0.4",  # Replica 2 IP
+        "ip": "172.18.0.4",
         "user": "repl",
         "pass": "replpass"
     },
-    # Add as many other replica nodes as you need here.
+    # Specify as many nodes in the cluser as you want here.
 ]

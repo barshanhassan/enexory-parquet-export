@@ -227,7 +227,7 @@ def main():
         print(f"{COLOR_RED}[ERROR]{COLOR_RESET} No nodes are defined in 'monitor_config.py'. Monitor is stopping.")
         return
     
-    print(f"{COLOR_GREEN}[INFO]{COLOR_RESET} Monitoring {len(node_configs)} nodes. Master identified as {cfg.MASTER_NODE_IP}.")
+    print(f"{COLOR_GREEN}[INFO]{COLOR_RESET} Monitoring {len(node_configs)} nodes. {'Master identified as ' + cfg.MASTER_NODE_IP if cfg.MASTER_NODE_IP else 'No master node specified in the config'}.")
 
     while True:
         try:
@@ -253,7 +253,7 @@ def main():
                         anomalies_detected[ip] = anomaly
 
             # --- Print current status to console ---
-            print(f"\n--- Status at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC | Master: {cfg.MASTER_NODE_IP} ---")
+            print(f"\n--- Status at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC | Master: {cfg.MASTER_NODE_IP if cfg.MASTER_NODE_IP else 'N/A'} ---")
             for ip, status in sorted(current_statuses.items()):
                 if not status['is_online']:
                     print(f"{ip:<15} | {COLOR_RED}OFFLINE{COLOR_RESET}")
