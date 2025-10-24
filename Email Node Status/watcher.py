@@ -7,7 +7,8 @@ It sends daily summary emails and immediate anomaly alerts if the state of any
 node changes (e.g., goes offline, exceeds lag threshold, or replication stops).
 """
 
-# pylint: disable=broad-exception-caught,invalid-name
+# pylint: disable=broad-exception-caught,invalid-name,line-too-long,global-statement
+# mypy: check_untyped_defs=True
 
 import time
 import datetime
@@ -216,7 +217,7 @@ def send_email(subject: str, html_content: str, recipient_emails: List[str]) -> 
     api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
 
     sender = sib_api_v3_sdk.SendSmtpEmailSender(name="MySQL Monitor", email=sender_email)
-    
+
     # Create a list of recipient objects for the API call
     to = [sib_api_v3_sdk.SendSmtpEmailTo(email=recipient) for recipient in valid_recipients]
 
@@ -273,7 +274,7 @@ def main():
     if not node_configs:
         log_event(LOG_ERROR, "No nodes are defined in 'monitor_config.py'. Monitor is stopping.")
         return
-    
+
     master_info = "Master identified as " + cfg.MASTER_NODE_IP if cfg.MASTER_NODE_IP else "No master node specified in the config"
     log_event(LOG_INFO, f"Monitoring {len(node_configs)} nodes. {master_info}.")
 
@@ -282,7 +283,7 @@ def main():
             now = datetime.datetime.now(datetime.timezone.utc)
             current_statuses: Dict[str, Dict[str, Any]] = {}
             anomalies_detected: Dict[str, str] = {}
-            
+
             for node in node_configs:
                 ip = node['ip']
                 status = get_node_status(node)
@@ -319,15 +320,15 @@ def main():
                 if not repl:
                     log_event(LOG_NONE, f"{ip:<15} | {COLOR_RED}REPLICATION NOT RUNNING{COLOR_RESET}", False)
                     continue
-                
+
                 lag_val = repl.get('Seconds_Behind_Master')
                 io_val = repl.get('Slave_IO_Running')
                 sql_val = repl.get('Slave_SQL_Running')
-                
+
                 lag_display = "NULL" if lag_val is None else lag_val
                 io_display = "N/A" if io_val is None else io_val
                 sql_display = "N/A" if sql_val is None else sql_val
-                
+
                 status_line = f"{ip:<15} | Lag: {str(lag_display):<4} | IO: {io_display:<3} | SQL: {sql_display:<3}"
                 log_event(LOG_NONE, status_line, False)
 
