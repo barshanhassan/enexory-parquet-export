@@ -3,6 +3,9 @@
 NOTE: parse_binlogs.sh required a compiled consolidate.cpp program as a requirement.
 3. For a quick row count match with parquet export and db, to see if row counts are same or not, use: row_integrity.py
 
+Some crontab helper examples:
+0 6 * * * cd /opt/repos/enexory-parquet-export && PATH=$PATH:/usr/bin:/opt/repos/enexory-parquet-export /bin/bash parse_binlogs.sh --binlog-folder=/var/log/mysql --days-back=1
+
 -------------------------------------------------------------------------------------------------
 
 Prerequisites to compiling c++ program:

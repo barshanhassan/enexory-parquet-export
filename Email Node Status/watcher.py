@@ -11,6 +11,7 @@ node changes (e.g., goes offline, exceeds lag threshold, or replication stops).
 
 import time
 import datetime
+from pathlib import Path
 from typing import Any, Dict, Optional, List
 
 import mysql.connector
@@ -26,9 +27,55 @@ COLOR_YELLOW: str = "\033[93m"
 COLOR_RED: str = "\033[91m"
 COLOR_RESET: str = "\033[0m"
 
+# --- Log Level Constants ---
+LOG_INFO: str = "INFO"
+LOG_WARN: str = "WARN"
+LOG_ERROR: str = "ERROR"
+LOG_ALERT: str = "ALERT"
+LOG_NONE: str = "NONE"
+
 # --- State Tracking ---
 previous_node_statuses: Dict[str, Dict[str, Any]] = {}
 last_daily_report_sent_date: Optional[datetime.date] = None
+
+def log_event(level: str, message: str, add_timestamp_in_log_file: bool = True) -> None:
+    """
+    Logs a message to a daily file and prints a colored version to the console.
+    The message passed to this function should be colorless.
+    """
+    color_map = {
+        LOG_INFO: COLOR_GREEN,
+        LOG_WARN: COLOR_YELLOW,
+        LOG_ERROR: COLOR_RED,
+        LOG_ALERT: COLOR_YELLOW,
+    }
+
+    # --- Prepare Console and File Messages ---
+    if level == LOG_NONE:
+        console_message = message
+        file_message_body = message
+    else:
+        color = color_map.get(level, "")
+        console_message = f"{color}[{level}]{COLOR_RESET} {message}"
+        file_message_body = f"[{level}] {message}"
+
+    # Print to console first
+    print(console_message)
+
+    # --- Log to file with error handling ---
+    try:
+        log_dir = Path(cfg.LOGS_FOLDER)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file_path = log_dir / f"{datetime.datetime.now(datetime.timezone.utc).date()}.log"
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+
+        with open(log_file_path, 'a', encoding='utf-8') as f:
+            if add_timestamp_in_log_file:
+                f.write(f"\nLogged at {timestamp}:\n{file_message_body}\n")
+            else:
+                f.write(f"{file_message_body}\n")
+    except Exception as e:
+        print(f"{COLOR_RED}[{LOG_ERROR}]{COLOR_RESET} Could not write to log file: {e}")
 
 def get_node_status(node: Dict[str, str]) -> Dict[str, Any]:
     """
@@ -63,9 +110,9 @@ def get_node_status(node: Dict[str, str]) -> Dict[str, Any]:
         status["replication_status"] = slave_status
 
     except mysql.connector.Error as err:
-        print(f"{COLOR_YELLOW}[WARN]{COLOR_RESET} Could not connect to {node['ip']}: {err}")
+        log_event(LOG_WARN, f"Could not connect to {node['ip']}: {err}")
     except Exception as e:
-        print(f"{COLOR_RED}[ERROR]{COLOR_RESET} An unexpected error occurred while checking {node['ip']}: {e}")
+        log_event(LOG_ERROR, f"An unexpected error occurred while checking {node['ip']}: {e}")
     finally:
         if conn and conn.is_connected(): # Check that conn exists AND is open
             conn.close()
@@ -145,7 +192,7 @@ def generate_report_html(all_statuses: Dict[str, Dict[str, Any]], title: str, in
                 {rows_html}
             </tbody>
         </table>
-        <p><small>Report generated at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC</small></p>
+        <p><small>Report generated at {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC</small></p>
     </body>
     </html>
     """
@@ -160,8 +207,8 @@ def send_email(subject: str, html_content: str, recipient_emails: List[str]) -> 
     valid_recipients = [email for email in recipient_emails if email]
 
     if not api_key or not sender_email or not valid_recipients:
-        print(f"{COLOR_YELLOW}[WARN]{COLOR_RESET} Email settings are incomplete or no recipients are defined. Printing email to console instead.")
-        print(f"--- EMAIL: {subject} ---\n{html_content}\n--- END EMAIL ---")
+        log_event(LOG_WARN, "Email settings are incomplete or no recipients are defined. Printing email to console instead.")
+        log_event(LOG_NONE, f"--- EMAIL: {subject} ---\n{html_content}\n--- END EMAIL ---")
         return
 
     configuration = sib_api_v3_sdk.Configuration()
@@ -179,9 +226,9 @@ def send_email(subject: str, html_content: str, recipient_emails: List[str]) -> 
 
     try:
         api_instance.send_transac_email(send_smtp_email)
-        print(f"{COLOR_GREEN}[INFO]{COLOR_RESET} Successfully sent email notification to {', '.join(valid_recipients)}.")
+        log_event(LOG_INFO, f"Successfully sent email notification to {', '.join(valid_recipients)}.")
     except ApiException as e:
-        print(f"{COLOR_RED}[ERROR]{COLOR_RESET} Exception when calling Brevo API: {e.body}")
+        log_event(LOG_ERROR, f"Exception when calling Brevo API: {e.body}")
 
 def get_anomaly_summary(current_status: Dict[str, Any], prev_status: Dict[str, Any]) -> Optional[str]:
     """Compares current and previous status to determine if a new anomaly occurred."""
@@ -220,18 +267,19 @@ def get_anomaly_summary(current_status: Dict[str, Any], prev_status: Dict[str, A
 def main():
     """Main execution loop."""
     global previous_node_statuses, last_daily_report_sent_date
-    print("--- Starting MySQL Replication Monitor ---")
+    log_event(LOG_NONE, "--- Starting MySQL Replication Monitor ---")
 
     node_configs = cfg.NODES
     if not node_configs:
-        print(f"{COLOR_RED}[ERROR]{COLOR_RESET} No nodes are defined in 'monitor_config.py'. Monitor is stopping.")
+        log_event(LOG_ERROR, "No nodes are defined in 'monitor_config.py'. Monitor is stopping.")
         return
     
-    print(f"{COLOR_GREEN}[INFO]{COLOR_RESET} Monitoring {len(node_configs)} nodes. {'Master identified as ' + cfg.MASTER_NODE_IP if cfg.MASTER_NODE_IP else 'No master node specified in the config'}.")
+    master_info = "Master identified as " + cfg.MASTER_NODE_IP if cfg.MASTER_NODE_IP else "No master node specified in the config"
+    log_event(LOG_INFO, f"Monitoring {len(node_configs)} nodes. {master_info}.")
 
     while True:
         try:
-            now = datetime.datetime.now()
+            now = datetime.datetime.now(datetime.timezone.utc)
             current_statuses: Dict[str, Dict[str, Any]] = {}
             anomalies_detected: Dict[str, str] = {}
             
@@ -253,19 +301,23 @@ def main():
                         anomalies_detected[ip] = anomaly
 
             # --- Print current status to console ---
-            print(f"\n--- Status at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC | Master: {cfg.MASTER_NODE_IP if cfg.MASTER_NODE_IP else 'N/A'} ---")
+            header = f"\n--- Status at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC | Master: {cfg.MASTER_NODE_IP if cfg.MASTER_NODE_IP else 'N/A'} ---"
+            log_event(LOG_NONE, header, False)
+
             for ip, status in sorted(current_statuses.items()):
+                # The logic for coloring is now handled by constructing the final string here
+                # and passing a clean version to the log_event function.
                 if not status['is_online']:
-                    print(f"{ip:<15} | {COLOR_RED}OFFLINE{COLOR_RESET}")
+                    log_event(LOG_NONE, f"{ip:<15} | {COLOR_RED}OFFLINE{COLOR_RESET}", False)
                     continue
 
                 if status['is_master']:
-                    print(f"{ip:<15} | {COLOR_GREEN}MASTER{COLOR_RESET}")
+                    log_event(LOG_NONE, f"{ip:<15} | {COLOR_GREEN}MASTER{COLOR_RESET}", False)
                     continue
 
                 repl = status.get('replication_status')
                 if not repl:
-                    print(f"{ip:<15} | {COLOR_RED}REPLICATION NOT RUNNING{COLOR_RESET}")
+                    log_event(LOG_NONE, f"{ip:<15} | {COLOR_RED}REPLICATION NOT RUNNING{COLOR_RESET}", False)
                     continue
                 
                 lag_val = repl.get('Seconds_Behind_Master')
@@ -275,12 +327,13 @@ def main():
                 lag_display = "NULL" if lag_val is None else lag_val
                 io_display = "N/A" if io_val is None else io_val
                 sql_display = "N/A" if sql_val is None else sql_val
-
-                print(f"{ip:<15} | Lag: {str(lag_display):<4} | IO: {io_display:<3} | SQL: {sql_display:<3}")
+                
+                status_line = f"{ip:<15} | Lag: {str(lag_display):<4} | IO: {io_display:<3} | SQL: {sql_display:<3}"
+                log_event(LOG_NONE, status_line, False)
 
 
             if anomalies_detected:
-                print(f"{COLOR_YELLOW}[ALERT]{COLOR_RESET} New anomalies detected: {anomalies_detected}")
+                log_event(LOG_ALERT, f"New anomalies detected: {anomalies_detected}")
                 intro = "An anomaly has been detected in the MySQL cluster. The following changes occurred:"
                 for ip, reason in anomalies_detected.items():
                     intro += f"<br>- <strong>{ip}</strong>: {reason}"
@@ -288,7 +341,7 @@ def main():
                 send_email("ALERT: MySQL Replication Anomaly Detected", html_body, cfg.EMAIL_TO)
 
             if now.hour == cfg.EMAIL_SEND_HOUR and now.date() != last_daily_report_sent_date:
-                print(f"{COLOR_GREEN}[INFO]{COLOR_RESET} Sending daily health report...")
+                log_event(LOG_INFO, "Sending daily health report...")
                 html_body = generate_report_html(current_statuses, "Daily MySQL Replication Health Report", "This is the scheduled daily summary of the replication cluster status.")
                 send_email("Daily MySQL Replication Report", html_body, cfg.EMAIL_TO)
                 last_daily_report_sent_date = now.date()
@@ -296,11 +349,11 @@ def main():
             previous_node_statuses = current_statuses
             time.sleep(cfg.CHECK_INTERVAL_SECONDS)
         except KeyboardInterrupt:
-            print("\n--- Monitor stopped by user. ---")
+            log_event(LOG_NONE, "--- Monitor stopped by user. ---")
             break
         except Exception as e:
-            print(f"An error occured: {e}")
-            pass
+            log_event(LOG_ERROR, f"An error occured: {e}")
+            time.sleep(cfg.CHECK_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
     main()
